@@ -21,9 +21,6 @@ data <- read.csv("../data/most-streamed-spotify-songs-2024.csv")
 ```
 
 ```{r}
-# Basic Data Summary
-summary(data)
-
 # Check data types
 sapply(data, class)
 ```
@@ -79,10 +76,6 @@ Since after cleaning the dataset, we are remained with 2916 valid entries, we ca
 
 ```{r}
 # Remove Duplicate data from dataset (prevent the same song being used twice in the model)
-# Check for duplicate rows
-n_duplicates <- sum(duplicated(data))
-cat("Number of duplicate rows:", n_duplicates, "\n")
-
 # Check for duplicate ISRCs since the same ISRC represent the same song
 if("ISRC" %in% names(data)) {
   duplicate_isrc <- sum(duplicated(data$ISRC))
@@ -98,6 +91,24 @@ preliminary_model <- lm(Spotify.Streams ~ Spotify.Playlist.Count + YouTube.Views
 
 summary(preliminary_model)
 ```
+
+```{r, echo=F, fig.width=8, fig.height=11}
+e_hat <- resid(preliminary_model)
+y_hat <- fitted(preliminary_model)
+
+feature_indices <- match(features, names(spotify_clean))
+
+par(mfrow=c(4,3))
+plot(spotify_clean$Spotify.Streams ~ y_hat, ylab="Spotify Streams", xlab="Fitted")
+plot(e_hat ~ y_hat, ylab="Residuals", xlab="Fitted")
+for(i in feature_indices){
+ plot(e_hat ~ spotify_clean[,i], ylab="Residuals", xlab=names(spotify_clean)[i])
+}
+plot(e_hat, ylab="Residuals", xlab="Observation number")
+qqnorm(e_hat)
+qqline(e_hat)
+```
+
 
 # Ethics Discussion
 
