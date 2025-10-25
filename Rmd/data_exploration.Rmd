@@ -17,7 +17,8 @@ library(dplyr)
 library(ggplot2)
 
 # load the dataset
-data <- read.csv("../data/most-streamed-spotify-songs-2024.csv")
+# If you are using vs code, please remove the ../ from the path.
+data <- read.csv("../data/most-streamed-spotify-songs-2024.csv") 
 ```
 
 ```{r}
