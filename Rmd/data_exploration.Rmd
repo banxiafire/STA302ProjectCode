@@ -14,7 +14,7 @@ urlcolor: blue
 ```{r, warning=FALSE, message=FALSE}
 # Library imports
 library(ggplot2)
-
+library(tidyverse)
 # load the dataset
 # If you are using vs code, please remove the ../ from the path.
 data <- read.csv("../data/most-streamed-spotify-songs-2024.csv") 
