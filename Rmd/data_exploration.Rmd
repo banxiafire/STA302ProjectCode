@@ -11,9 +11,8 @@ urlcolor: blue
 
 # Data Description: 
 
-```{r}
+```{r, warning=FALSE, message=FALSE}
 # Library imports
-library(dplyr)
 library(ggplot2)
 
 # load the dataset
@@ -21,10 +20,8 @@ library(ggplot2)
 data <- read.csv("../data/most-streamed-spotify-songs-2024.csv") 
 ```
 
+## Data Cleaning
 ```{r}
-# Basic Data Summary
-summary(data)
-
 # Check data types
 sapply(data, class)
 ```
@@ -38,12 +35,15 @@ names(data) <- gsub("-", ".", names(data))
 
 names(data)
 ```
+
 ```{r}
 # Take the features we need to use from the data table
 features <- c("Spotify.Streams", "Spotify.Playlist.Count", "YouTube.Views", 
               "YouTube.Likes", "TikTok.Posts", "TikTok.Views", 
               "Apple.Music.Playlist.Count", "Shazam.Counts", "AirPlay.Spins")
+```
 
+```{r}
 # From the above type check for each variable, every column is in character
 # and numbers are in format xxx,xxx,xxx so commas in between must be removed
 convert_to_numeric <- function(x) {
@@ -70,9 +70,9 @@ cat("Number of rows remaining:", nrow(data), "\n")
 # Check which rows have complete data for key variables
 complete_rows <- complete.cases(data[, features])
 # Keep only the rows with non-missing values for all features
-spotify_clean <- data[complete_rows, ]
+spotify_valid <- data[complete_rows, ]
 
-cat("Number of rows remaining:", nrow(spotify_clean), "\n")
+cat("Number of rows remaining:", nrow(spotify_valid), "\n")
 ```
 
 
@@ -80,29 +80,217 @@ Since after cleaning the dataset, we are remained with 2916 valid entries, we ca
 
 ```{r}
 # Remove Duplicate data from dataset (prevent the same song being used twice in the model)
-# Check for duplicate rows
-n_duplicates <- sum(duplicated(data))
-cat("Number of duplicate rows:", n_duplicates, "\n")
-
 # Check for duplicate ISRCs since the same ISRC represent the same song
 if("ISRC" %in% names(data)) {
   duplicate_isrc <- sum(duplicated(data$ISRC))
   cat("Songs with duplicate ISRC:", duplicate_isrc, "\n")
   
   # Remove duplicates by ISRC, keeping first occurrence
-  spotify_clean <- spotify_clean[!duplicated(spotify_clean$ISRC), ]
+  spotify_valid <- spotify_valid[!duplicated(spotify_valid$ISRC), ]
 }
 ```
 
 ```{r}
-preliminary_model <- lm(Spotify.Streams ~ Spotify.Playlist.Count + YouTube.Views + YouTube.Likes + TikTok.Posts + TikTok.Views + Apple.Music.Playlist.Count + Shazam.Counts + AirPlay.Spins + Explicit.Track, data=spotify_clean)
+# Remove outliers that is larger than 1.5 times InterQuartile Range
+remove_outliers_iqr <- function(data, columns, multiplier = 1.5) {
+  clean_data <- data
+  
+  for(col in columns) {
+    Q1 <- quantile(clean_data[[col]], 0.25, na.rm = TRUE)
+    Q3 <- quantile(clean_data[[col]], 0.75, na.rm = TRUE)
+    IQR_val <- Q3 - Q1
+    
+    lower_bound <- Q1 - multiplier * IQR_val
+    upper_bound <- Q3 + multiplier * IQR_val
+    
+    # Flag outliers in the dataset
+    outliers <- clean_data[[col]] < lower_bound | clean_data[[col]] > upper_bound
+    
+    # Remove rows with outliers
+    clean_data <- clean_data[!outliers, ]
+  }
+  
+  return(clean_data)
+}
+
+# Remove outliers present in the predictor variables
+predictors <- c("Spotify.Playlist.Count", "YouTube.Views", "YouTube.Likes", 
+                "TikTok.Posts", "TikTok.Views", "Apple.Music.Playlist.Count", 
+                "Shazam.Counts", "AirPlay.Spins")
+
+spotify_clean <- remove_outliers_iqr(spotify_valid, 
+                                            c("Spotify.Streams", predictors))
+
+cat("Rows remaining after outlier removal:", nrow(spotify_clean), "\n")
+```
+
+## Exploratory Data Analysis
+```{r}
+# Create response + predictor summary table (not including explicit track - it will presented in a separate frequency table)
+summary_table <- data.frame(
+  Variable = character(),
+  Min = numeric(),
+  Q1 = numeric(),
+  Median = numeric(),
+  Mean = numeric(),
+  Q3 = numeric(),
+  Max = numeric(),
+  stringsAsFactors = FALSE
+)
+
+for (f in features) {
+  x <- spotify_clean[[f]]
+  
+  summary_table <- rbind(summary_table, data.frame(
+    Feature = f,
+    Min = min(x, na.rm = TRUE),
+    Q1 = quantile(x, 0.25, na.rm = TRUE),
+    Median = median(x, na.rm = TRUE),
+    Mean = mean(x, na.rm = TRUE),
+    Q3 = quantile(x, 0.75, na.rm = TRUE),
+    Max = max(x, na.rm = TRUE)
+  ))
+}
+
+# remove rownames to avoid quantile range being printed accidentally
+rownames(summary_table) <- NULL
+
+# Print table
+print(summary_table)
+```
+
+```{r}
+# reshape dataset to long format and add predictor layers for scatterplots
+spotify_long <- spotify_clean %>%
+  select(Spotify.Streams, all_of(predictors)) %>%
+  pivot_longer(cols = all_of(predictors),
+               names_to = "Predictor",
+               values_to = "Value")
+```
+
+```{r}
+# Create plot
+ggplot(spotify_long, aes(x = Value, y = Spotify.Streams)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  facet_wrap(~ Predictor, scales = "free")
+```
+
+```{r}
+# Create histograms
+ggplot(spotify_long, aes(x = Value)) +
+  geom_histogram(fill = "lightblue", color = "black", bins = 30) +
+  facet_wrap(~ Predictor, scales = "free", ncol = 2) +
+  labs(title = "Distribution of Each Predictor",
+       y = "Frequency")
+
+table(spotify_clean$Explicit.Track)
+```
+
+# Preliminary Results
+## Preliminary Model Fitting
+```{r}
+preliminary_model <- lm(Spotify.Streams ~ Spotify.Playlist.Count + YouTube.Views + YouTube.Likes + TikTok.Posts + TikTok.Views + Apple.Music.Playlist.Count + Shazam.Counts + AirPlay.Spins + Explicit.Track + Spotify.Playlist.Count:Explicit.Track, data=spotify_clean)
 
 summary(preliminary_model)
 ```
 
-# Ethics Discussion
+```{r, echo=F, fig.width=8, fig.height=11}
+e_hat <- resid(preliminary_model)
+y_hat <- fitted(preliminary_model)
 
-# Preliminary Results
+feature_indices <- match(features, names(spotify_clean))
+
+par(mfrow=c(4,3))
+plot(spotify_clean$Spotify.Streams ~ y_hat, ylab="Spotify Streams", xlab="Fitted")
+plot(e_hat ~ y_hat, ylab="Residuals", xlab="Fitted")
+for(i in feature_indices){
+ plot(e_hat ~ spotify_clean[,i], ylab="Residuals", xlab=names(spotify_clean)[i])
+}
+plot(e_hat, ylab="Residuals", xlab="Observation number")
+qqnorm(e_hat)
+qqline(e_hat)
+```
+
+```{r}
+# Fit models to test if interaction is significant
+spotify_no_interaction <- lm(Spotify.Streams ~ Spotify.Playlist.Count + YouTube.Views + YouTube.Likes + TikTok.Posts + TikTok.Views + Apple.Music.Playlist.Count + Shazam.Counts + AirPlay.Spins + Explicit.Track, data=spotify_clean)
+
+# Compare models
+anova(spotify_no_interaction, preliminary_model)
+```
+Since partial F test gives a p-value of 1.111e-0.6 smaller than $\alpha$ = 0.05, the relationship between Spotify Playlist Count and Spotify Streams differs (statistically) significantly between Explicit and non-Explicit Track. 
+
+```{r}
+pairs(spotify_clean[, features])
+```
+
+## Potential assumption violation improvement strategies
+The below section is temporarily commented out, and might be applied in future
+```{r}
+# # boxCox transformation applied to response variable
+# bc <- boxCox(preliminary_model)
+# 
+# yLambda <- bc$x[which.max(bc$y)]
+# 
+# # Apply power transformation to predictor variables
+# tfs <- powerTransform(cbind(spotify_clean[,feature_indices]))
+# summary(tfs)
+```
+
+```{r}
+# rtSpotifyStreams <- (spotify_clean$Spotify.Streams)^yLambda
+# 
+# lambdas <- coef(tfs, round = TRUE)
+# 
+# # Make a copy of cleaned spotify data for transformatons
+# spotify_transformed <- spotify_clean
+# 
+# for(i in 1:length(feature_indices)) {
+#   var_name <- features[i]
+#   lambda <- lambdas[i]
+#   
+#   cat(sprintf("Transforming %s with lambda = %.2f\n", var_name, lambda))
+#   
+#   # Apply Box-Cox transformation
+#   spotify_transformed[[var_name]] <- bcPower(spotify_clean[[var_name]], lambda)
+# }
+```
+
+
+```{r}
+# # fitting a new model with transformations applied
+# model_transformed <- lm(rtSpotifyStreams ~ Spotify.Playlist.Count + YouTube.Views + YouTube.Likes + TikTok.Posts + TikTok.Views + Apple.Music.Playlist.Count + Shazam.Counts + AirPlay.Spins + Explicit.Track, data=spotify_clean)
+# 
+# summary(model_transformed)
+```
+
+```{r, echo=F, fig.width=8, fig.height=11}
+# e_hat_transformed <- resid(model_transformed)
+# y_hat_transformed <- fitted(model_transformed)
+# 
+# feature_indices <- match(features, names(spotify_transformed))
+# 
+# par(mfrow=c(4,3))
+# plot(spotify_transformed$Spotify.Streams ~ y_hat, ylab="Spotify Streams", xlab="Fitted")
+# plot(e_hat_transformed ~ y_hat_transformed, ylab="Residuals", xlab="Fitted")
+# for(i in feature_indices){
+#  plot(e_hat_transformed ~ spotify_transformed[,i], ylab="Residuals", xlab=names(spotify_transformed)[i])
+# }
+# plot(e_hat_transformed, ylab="Residuals", xlab="Observation number")
+# qqnorm(e_hat_transformed)
+# qqline(e_hat_transformed)
+```
+
+
+
+The preliminary fitted model is
+$$Spotify.Playlist.Count = -22100000 + 4325\text{Spotify.Playlist Count} + 0.02179\text{YouTube.Views} + 11.7\text{YouTube.Likes} + 31.6\text{TikTok.Posts} + 0.02417\text{TikTok.Views} + 1682000\text{Apple.Music.Playlist.Count} + 8.444\text{Shazam.Counts} - 0.03575\text{AirPlay.Spins} + 7944000\text{Explicit.Track} - -90.08\text{Spotify.Playlist.Count}*{Explicit.Track}$$
+Firstly, we check the conditional mean response condition to make sure that the observations from residual plots are conclusive. From each response vs. predictor plot, there is no obvious non-linear relationship from the plot, so the conditional mean response condition holds. Also, from scatter plot between each pair of predictor, no pair of predictors seem to exhibit a significant non-linear pattern, so the conditional mean predictor condition also holds. 
+
+Secondly, from the residual vs. fitted plot, a clear fanning pattern is present indicating a non-constant variance in the residuals. Also, the qqnorm plot demonstrates a non-linear pattern and largely deviates at the head and tail of the distribution. This indicates a violation in the normality assumption. In the observation of residual vs. fitted and each pair of residual vs. predictor, there is no obvious non-linear pattern or clustering presented, after examining the nature of each feature, there is likely no violation in the linearity and uncorrelated error assumption. 
+
+# Ethics Discussion
 
 # Plan
 
