@@ -5,15 +5,15 @@ output: pdf_document
 geometry: margin=0.5in
 urlcolor: blue
 ---
+
 # Contribution:
 
 # Introduction:
 
-# Data Description: 
+# Data Description:
 
 ```{r, warning=FALSE, message=FALSE}
 # Library imports
-library(ggplot2)
 library(tidyverse)
 # load the dataset
 # If you are using vs code, please remove the ../ from the path.
@@ -21,12 +21,13 @@ data <- read.csv("../data/most-streamed-spotify-songs-2024.csv")
 ```
 
 ## Data Cleaning
+
 ```{r}
 # Check data types
 sapply(data, class)
 ```
-response = Spotify Stream
-predictor = Spotify Playlist Count, Youtube Views, Youtube Likes, TikTok Posts, TikTok Views, Apple Music Playlist Count, Shazam Counts, AirPlay Spins, Explicit Track(0 = Clean, 1 = Explicit Content)
+
+response = Spotify Stream predictor = Spotify Playlist Count, Youtube Views, Youtube Likes, TikTok Posts, TikTok Views, Apple Music Playlist Count, Shazam Counts, AirPlay Spins, Explicit Track(0 = Clean, 1 = Explicit Content)
 
 ```{r}
 # Remove spaces and special characters from column names (in case there is any)
@@ -75,8 +76,7 @@ spotify_valid <- data[complete_rows, ]
 cat("Number of rows remaining:", nrow(spotify_valid), "\n")
 ```
 
-
-Since after cleaning the dataset, we are remained with 2916 valid entries, we can still assume that we can train a valid model from this dataset. 
+Since after cleaning the dataset, we are remained with 2916 valid entries, we can still assume that we can train a valid model from this dataset.
 
 ```{r}
 # Remove Duplicate data from dataset (prevent the same song being used twice in the model)
@@ -92,39 +92,52 @@ if("ISRC" %in% names(data)) {
 
 ```{r}
 # Remove outliers that is larger than 1.5 times InterQuartile Range
-remove_outliers_iqr <- function(data, columns, multiplier = 1.5) {
-  clean_data <- data
-  
-  for(col in columns) {
-    Q1 <- quantile(clean_data[[col]], 0.25, na.rm = TRUE)
-    Q3 <- quantile(clean_data[[col]], 0.75, na.rm = TRUE)
-    IQR_val <- Q3 - Q1
-    
-    lower_bound <- Q1 - multiplier * IQR_val
-    upper_bound <- Q3 + multiplier * IQR_val
-    
-    # Flag outliers in the dataset
-    outliers <- clean_data[[col]] < lower_bound | clean_data[[col]] > upper_bound
-    
-    # Remove rows with outliers
-    clean_data <- clean_data[!outliers, ]
-  }
-  
-  return(clean_data)
-}
-
-# Remove outliers present in the predictor variables
-predictors <- c("Spotify.Playlist.Count", "YouTube.Views", "YouTube.Likes", 
-                "TikTok.Posts", "TikTok.Views", "Apple.Music.Playlist.Count", 
-                "Shazam.Counts", "AirPlay.Spins")
-
-spotify_clean <- remove_outliers_iqr(spotify_valid, 
-                                            c("Spotify.Streams", predictors))
-
-cat("Rows remaining after outlier removal:", nrow(spotify_clean), "\n")
+# remove_outliers_iqr <- function(data, columns, multiplier = 1.5) {
+#   clean_data <- data
+#   
+#   for(col in columns) {
+#     Q1 <- quantile(clean_data[[col]], 0.25, na.rm = TRUE)
+#     Q3 <- quantile(clean_data[[col]], 0.75, na.rm = TRUE)
+#     IQR_val <- Q3 - Q1
+#     
+#     lower_bound <- Q1 - multiplier * IQR_val
+#     upper_bound <- Q3 + multiplier * IQR_val
+#     
+#     # Flag outliers in the dataset
+#     outliers <- clean_data[[col]] < lower_bound | clean_data[[col]] > upper_bound
+#     
+#     # Remove rows with outliers
+#     clean_data <- clean_data[!outliers, ]
+#   }
+#   
+#   return(clean_data)
+# }
+# 
+# # Remove outliers present in the predictor variables
+# predictors <- c("Spotify.Playlist.Count", "YouTube.Views", "YouTube.Likes", 
+#                 "TikTok.Posts", "TikTok.Views", "Apple.Music.Playlist.Count", 
+#                 "Shazam.Counts", "AirPlay.Spins")
+# 
+# spotify_clean <- remove_outliers_iqr(spotify_valid, 
+#                                             c("Spotify.Streams", predictors))
+# 
+# cat("Rows remaining after outlier removal:", nrow(spotify_clean), "\n")
 ```
 
+```{r}
+# For exporting the cleaned dataset
+variables_to_keep <- c(features, "Explicit.Track")
+
+# Create cleaned dataset with only needed variables
+spotify_model_data <- spotify_clean[, variables_to_keep]
+
+# Export to CSV
+write.csv(spotify_model_data, "../data/spotify_cleaned.csv", row.names = FALSE)
+```
+
+
 ## Exploratory Data Analysis
+
 ```{r}
 # Create response + predictor summary table (not including explicit track - it will presented in a separate frequency table)
 summary_table <- data.frame(
@@ -188,12 +201,53 @@ table(spotify_clean$Explicit.Track)
 ```
 
 # Preliminary Results
+
 ## Preliminary Model Fitting
+
 ```{r}
-preliminary_model <- lm(Spotify.Streams ~ Spotify.Playlist.Count + YouTube.Views + YouTube.Likes + TikTok.Posts + TikTok.Views + Apple.Music.Playlist.Count + Shazam.Counts + AirPlay.Spins + Explicit.Track + Spotify.Playlist.Count:Explicit.Track, data=spotify_clean)
+preliminary_model <- lm(Spotify.Streams ~ Spotify.Playlist.Count + YouTube.Views + YouTube.Likes + TikTok.Posts + TikTok.Views + Apple.Music.Playlist.Count + Shazam.Counts + AirPlay.Spins + Explicit.Track + Spotify.Playlist.Count:Explicit.Track, data=spotify_valid)
 
 summary(preliminary_model)
 ```
+
+```{r}
+n <- nrow(spotify_valid)
+p <- length(coef(preliminary_model))-1
+hcut <- 2*(p + 1)/n
+cookcut <- qf(0.5, df1=p+1, df2=n-p-1)
+fitcut <- 2 * sqrt((p + 1) / n)
+betacut <- 2 / sqrt(n)
+```
+
+```{r}
+h_ii <- hatvalues(preliminary_model)
+r_i <- rstandard(preliminary_model)
+D_i <- cooks.distance(preliminary_model)
+dffits_i <- dffits(preliminary_model)
+dfbetas_i <- dfbetas(preliminary_model)
+```
+
+
+```{r}
+# which observations are leverage points?
+which(h_ii > hcut)
+
+# which observations are regression outliers?
+which(r_i > 4 | r_i < -4)
+
+# which observations are influential by cook's distance?
+which(D_i > cookcut)
+
+# which observations are influential by dffits?
+which(abs(dffits_i) > fitcut)
+
+# which observations are influential by dfbetas?
+for(i in 1:8){
+  print(paste0("Beta ", i-1))
+  print(which(abs(dfbetas_i[,i]) > betacut))    # this checks all betas in a loop
+}
+```
+
 
 ```{r, echo=F, fig.width=8, fig.height=11}
 e_hat <- resid(preliminary_model)
@@ -219,14 +273,17 @@ spotify_no_interaction <- lm(Spotify.Streams ~ Spotify.Playlist.Count + YouTube.
 # Compare models
 anova(spotify_no_interaction, preliminary_model)
 ```
-Since partial F test gives a p-value of 1.111e-0.6 smaller than $\alpha$ = 0.05, the relationship between Spotify Playlist Count and Spotify Streams differs (statistically) significantly between Explicit and non-Explicit Track. 
+
+Since partial F test gives a p-value of 1.111e-0.6 smaller than $\alpha$ = 0.05, the relationship between Spotify Playlist Count and Spotify Streams differs (statistically) significantly between Explicit and non-Explicit Track.
 
 ```{r}
 pairs(spotify_clean[, features])
 ```
 
 ## Potential assumption violation improvement strategies
+
 The below section is temporarily commented out, and might be applied in future
+
 ```{r}
 # # boxCox transformation applied to response variable
 # bc <- boxCox(preliminary_model)
@@ -257,7 +314,6 @@ The below section is temporarily commented out, and might be applied in future
 # }
 ```
 
-
 ```{r}
 # # fitting a new model with transformations applied
 # model_transformed <- lm(rtSpotifyStreams ~ Spotify.Playlist.Count + YouTube.Views + YouTube.Likes + TikTok.Posts + TikTok.Views + Apple.Music.Playlist.Count + Shazam.Counts + AirPlay.Spins + Explicit.Track, data=spotify_clean)
@@ -282,11 +338,7 @@ The below section is temporarily commented out, and might be applied in future
 # qqline(e_hat_transformed)
 ```
 
-
-
-The preliminary fitted model is
-$$Spotify.Playlist.Count = -22100000 + 4325\text{Spotify.Playlist Count} + 0.02179\text{YouTube.Views} + 11.7\text{YouTube.Likes} + 31.6\text{TikTok.Posts} + 0.02417\text{TikTok.Views} + 1682000\text{Apple.Music.Playlist.Count} + 8.444\text{Shazam.Counts} - 0.03575\text{AirPlay.Spins} + 7944000\text{Explicit.Track} - -90.08\text{Spotify.Playlist.Count}*{Explicit.Track}$$
-Firstly, we check the conditional mean response condition to make sure that the observations from residual plots are conclusive. From each response vs. predictor plot, there is no obvious non-linear relationship from the plot, so the conditional mean response condition holds. Also, from scatter plot between each pair of predictor, no pair of predictors seem to exhibit a significant non-linear pattern, so the conditional mean predictor condition also holds. 
+The preliminary fitted model is $$Spotify.Playlist.Count = -22100000 + 4325\text{Spotify.Playlist Count} + 0.02179\text{YouTube.Views} + 11.7\text{YouTube.Likes} + 31.6\text{TikTok.Posts} + 0.02417\text{TikTok.Views} + 1682000\text{Apple.Music.Playlist.Count} + 8.444\text{Shazam.Counts} - 0.03575\text{AirPlay.Spins} + 7944000\text{Explicit.Track} - -90.08\text{Spotify.Playlist.Count}*{Explicit.Track}$$ Firstly, we check the conditional mean response condition to make sure that the observations from residual plots are conclusive. From each response vs. predictor plot, there is no obvious non-linear relationship from the plot, so the conditional mean response condition holds. Also, from scatter plot between each pair of predictor, no pair of predictors seem to exhibit a significant non-linear pattern, so the conditional mean predictor condition also holds.
 
 Secondly, from the residual vs. fitted plot, a clear fanning pattern is present indicating a non-constant variance in the residuals. Also, the qqnorm plot demonstrates a non-linear pattern and largely deviates at the head and tail of the distribution. This indicates a violation in the normality assumption. In the observation of residual vs. fitted and each pair of residual vs. predictor, there is no obvious non-linear pattern or clustering presented, after examining the nature of each feature, there is likely no violation in the linearity and uncorrelated error assumption.
 
