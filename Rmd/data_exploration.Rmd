@@ -1,26 +1,36 @@
 ---
-title: "data_exploration"
+title: "final_model"
 author: "Tianyu Luo; Nanxin Li; Xuanbo Han"
 output: pdf_document
 geometry: margin=0.5in
 urlcolor: blue
 ---
 
-# Contribution:
-
-# Introduction:
-
-# Data Description:
-
 ```{r, warning=FALSE, message=FALSE}
+# If library imports failed, uncomment to install packages
+# install.packages("car")
+# install.packages("zoo")
+
 # Library imports
 library(tidyverse)
+library(car)
+library(zoo)
+
 # load the dataset
 # If you are using vs code, please remove the ../ from the path.
 data <- read.csv("../data/most-streamed-spotify-songs-2024.csv") 
 ```
 
 ## Data Cleaning
+
+```{r}
+set.seed(123)  # for reproducibility
+train_index <- sample(seq_len(nrow(data)), size = 0.7 * nrow(data))
+
+train_data <- data[train_index, ]
+test_data  <- data[-train_index, ]
+```
+
 
 ```{r}
 # Check data types
@@ -36,7 +46,7 @@ names(data) <- gsub("-", ".", names(data))
 
 names(data)
 ```
-
+# Preliminary Model
 ```{r}
 # Take the features we need to use from the data table
 features <- c("Spotify.Streams", "Spotify.Playlist.Count", "YouTube.Views", 
@@ -62,18 +72,18 @@ convert_to_numeric <- function(x) {
 }
 
 for(col in features) {
-  data[[col]] <- convert_to_numeric(data[[col]])
+  train_data[[col]] <- convert_to_numeric(train_data[[col]])
 }
-cat("Number of rows remaining:", nrow(data), "\n")
+cat("Number of rows remaining:", nrow(train_data), "\n")
 ```
 
 ```{r}
 # Check which rows have complete data for key variables
-complete_rows <- complete.cases(data[, features])
+complete_rows <- complete.cases(train_data[, features])
 # Keep only the rows with non-missing values for all features
-spotify_valid <- data[complete_rows, ]
+spotify_clean <- train_data[complete_rows, ]
 
-cat("Number of rows remaining:", nrow(spotify_valid), "\n")
+cat("Number of rows remaining:", nrow(spotify_clean), "\n")
 ```
 
 Since after cleaning the dataset, we are remained with 2916 valid entries, we can still assume that we can train a valid model from this dataset.
@@ -81,47 +91,17 @@ Since after cleaning the dataset, we are remained with 2916 valid entries, we ca
 ```{r}
 # Remove Duplicate data from dataset (prevent the same song being used twice in the model)
 # Check for duplicate ISRCs since the same ISRC represent the same song
-if("ISRC" %in% names(data)) {
-  duplicate_isrc <- sum(duplicated(data$ISRC))
+if("ISRC" %in% names(train_data)) {
+  duplicate_isrc <- sum(duplicated(train_data$ISRC))
   cat("Songs with duplicate ISRC:", duplicate_isrc, "\n")
   
   # Remove duplicates by ISRC, keeping first occurrence
-  spotify_valid <- spotify_valid[!duplicated(spotify_valid$ISRC), ]
+  spotify_clean <- spotify_clean[!duplicated(spotify_clean$ISRC), ]
 }
-```
 
-```{r}
-# Remove outliers that is larger than 1.5 times InterQuartile Range
-# remove_outliers_iqr <- function(data, columns, multiplier = 1.5) {
-#   clean_data <- data
-#   
-#   for(col in columns) {
-#     Q1 <- quantile(clean_data[[col]], 0.25, na.rm = TRUE)
-#     Q3 <- quantile(clean_data[[col]], 0.75, na.rm = TRUE)
-#     IQR_val <- Q3 - Q1
-#     
-#     lower_bound <- Q1 - multiplier * IQR_val
-#     upper_bound <- Q3 + multiplier * IQR_val
-#     
-#     # Flag outliers in the dataset
-#     outliers <- clean_data[[col]] < lower_bound | clean_data[[col]] > upper_bound
-#     
-#     # Remove rows with outliers
-#     clean_data <- clean_data[!outliers, ]
-#   }
-#   
-#   return(clean_data)
-# }
-# 
-# # Remove outliers present in the predictor variables
-# predictors <- c("Spotify.Playlist.Count", "YouTube.Views", "YouTube.Likes", 
-#                 "TikTok.Posts", "TikTok.Views", "Apple.Music.Playlist.Count", 
-#                 "Shazam.Counts", "AirPlay.Spins")
-# 
-# spotify_clean <- remove_outliers_iqr(spotify_valid, 
-#                                             c("Spotify.Streams", predictors))
-# 
-# cat("Rows remaining after outlier removal:", nrow(spotify_clean), "\n")
+predictors <- c("Spotify.Playlist.Count", "YouTube.Views", "YouTube.Likes", 
+                "TikTok.Posts", "TikTok.Views", "Apple.Music.Playlist.Count", 
+                "Shazam.Counts", "AirPlay.Spins")
 ```
 
 ```{r}
@@ -200,18 +180,17 @@ ggplot(spotify_long, aes(x = Value)) +
 table(spotify_clean$Explicit.Track)
 ```
 
-# Preliminary Results
-
-## Preliminary Model Fitting
+## Model Fitting
 
 ```{r}
-preliminary_model <- lm(Spotify.Streams ~ Spotify.Playlist.Count + YouTube.Views + YouTube.Likes + TikTok.Posts + TikTok.Views + Apple.Music.Playlist.Count + Shazam.Counts + AirPlay.Spins + Explicit.Track + Spotify.Playlist.Count:Explicit.Track, data=spotify_valid)
+preliminary_model <- lm(Spotify.Streams ~ Spotify.Playlist.Count + YouTube.Views + YouTube.Likes + TikTok.Posts + TikTok.Views + Apple.Music.Playlist.Count + Shazam.Counts + AirPlay.Spins + Explicit.Track + Spotify.Playlist.Count:Explicit.Track, data=spotify_clean)
 
 summary(preliminary_model)
 ```
 
+## Problematic Observations in Preliminary Model
 ```{r}
-n <- nrow(spotify_valid)
+n <- nrow(spotify_clean)
 p <- length(coef(preliminary_model))-1
 hcut <- 2*(p + 1)/n
 cookcut <- qf(0.5, df1=p+1, df2=n-p-1)
@@ -229,37 +208,258 @@ dfbetas_i <- dfbetas(preliminary_model)
 
 
 ```{r}
-# which observations are leverage points?
-which(h_ii > hcut)
+# indices flagged by each rule
+lev_idx      <- which(h_ii > hcut)                       # leverage points
+reg_out_idx  <- which(r_i > 4 | r_i < -4)                # regression outliers
+cook_idx     <- which(D_i > cookcut)                     # Cook's distance
+dffits_idx   <- which(abs(dffits_i) > fitcut)            # DFFITS
+dfbetas_idx  <- which(apply(abs(dfbetas_i) > betacut, 1, any))  # any beta
+```
 
-# which observations are regression outliers?
-which(r_i > 4 | r_i < -4)
+```{r}
+all_influential_idx <- sort(unique(c(
+  lev_idx,
+  reg_out_idx,
+  cook_idx,
+  dffits_idx,
+  dfbetas_idx
+)))
+```
 
-# which observations are influential by cook's distance?
-which(D_i > cookcut)
+```{r}
+# proportion of influential points in spotify_valid
+prop_influential <- length(all_influential_idx) / n
 
-# which observations are influential by dffits?
-which(abs(dffits_i) > fitcut)
+prop_influential
+```
 
-# which observations are influential by dfbetas?
-for(i in 1:8){
-  print(paste0("Beta ", i-1))
-  print(which(abs(dfbetas_i[,i]) > betacut))    # this checks all betas in a loop
+## Multicollinearity
+
+```{r}
+vif(preliminary_model)
+```
+The preliminary fitted model is $$Spotify.Playlist.Count = -22100000 + 4325\text{Spotify.Playlist Count} + 0.02179\text{YouTube.Views} + 11.7\text{YouTube.Likes} + 31.6\text{TikTok.Posts} + 0.02417\text{TikTok.Views} + 1682000\text{Apple.Music.Playlist.Count} + 8.444\text{Shazam.Counts} - 0.03575\text{AirPlay.Spins} + 7944000\text{Explicit.Track} - -90.08\text{Spotify.Playlist.Count}*{Explicit.Track}$$ Firstly, we check the conditional mean response condition to make sure that the observations from residual plots are conclusive. From each response vs. predictor plot, there is no obvious non-linear relationship from the plot, so the conditional mean response condition holds. Also, from scatter plot between each pair of predictor, no pair of predictors seem to exhibit a significant non-linear pattern, so the conditional mean predictor condition also holds.
+
+Secondly, from the residual vs. fitted plot, a clear fanning pattern is present indicating a non-constant variance in the residuals. Also, the qqnorm plot demonstrates a non-linear pattern and largely deviates at the head and tail of the distribution. This indicates a violation in the normality assumption. In the observation of residual vs. fitted and each pair of residual vs. predictor, there is no obvious non-linear pattern or clustering presented, after examining the nature of each feature, there is likely no violation in the linearity and uncorrelated error assumption.
+
+# Final Model
+## Feature Engineering
+
+```{r}
+# Ensure correct format
+spotify_clean$Release.Date <- as.Date(spotify_clean$Release.Date, format = "%d/%m/%Y")
+
+# Check conversion
+head(spotify_clean$Release.Date)
+
+# Set baseline as the earliest release date
+baseline_date <- min(spotify_clean$Release.Date, na.rm = TRUE)
+baseline_date  # Optional: print baseline
+
+# Compute time difference in months
+spotify_clean$time <- as.numeric(
+  (as.yearmon(spotify_clean$Release.Date) - as.yearmon(baseline_date)) * 12
+)
+
+# Convert to integer (if preferred)
+spotify_clean$time <- round(spotify_clean$time)
+
+# Check results
+head(spotify_clean[, c("Release.Date", "time")])
+```
+
+Clean Dataset
+```{r}
+# Remove observations with missing timestamp (either Release.Date or time is NA)
+spotify_time <- spotify_clean[!is.na(spotify_clean$Release.Date) & !is.na(spotify_clean$time), ]
+
+# Check number of remaining observations
+nrow(spotify_time)
+
+# Optional: view first few cleaned rows
+head(spotify_time[, c("Release.Date", "time")])
+```
+
+```{r}
+time_model <- lm(Spotify.Streams ~ time + Spotify.Playlist.Count + YouTube.Views + YouTube.Likes + TikTok.Posts + TikTok.Views + Apple.Music.Playlist.Count + Shazam.Counts + AirPlay.Spins + Explicit.Track + Spotify.Playlist.Count:Explicit.Track, data=spotify_time)
+summary(time_model)
+```
+
+```{r}
+vif(time_model)
+```
+
+```{r}
+reduced_time_model <- lm(Spotify.Streams ~ time + YouTube.Views + YouTube.Likes + TikTok.Posts + TikTok.Views + Apple.Music.Playlist.Count + Shazam.Counts + AirPlay.Spins + Explicit.Track + Spotify.Playlist.Count:Explicit.Track, data=spotify_time)
+summary(reduced_time_model)
+```
+
+```{r}
+reduced_time_model2 <- lm(Spotify.Streams ~ time + YouTube.Views + YouTube.Likes + TikTok.Posts + Apple.Music.Playlist.Count + Shazam.Counts + AirPlay.Spins + Explicit.Track + Spotify.Playlist.Count:Explicit.Track, data=spotify_time)
+summary(reduced_time_model2)
+```
+
+```{r}
+vif(reduced_time_model2)
+```
+
+```{r}
+reduced_time_model3 <- lm(Spotify.Streams ~ time + YouTube.Views + YouTube.Likes + TikTok.Posts + Apple.Music.Playlist.Count + Shazam.Counts + Explicit.Track + Spotify.Playlist.Count:Explicit.Track, data=spotify_time)
+summary(reduced_time_model3)
+```
+
+```{r, echo=F, fig.width=8, fig.height=11}
+e_hat <- resid(reduced_time_model3)
+y_hat <- fitted(reduced_time_model3)
+
+feature_indices <- match(features, names(spotify_time))
+
+par(mfrow=c(4,3))
+plot(spotify_time$Spotify.Streams ~ y_hat, ylab="Spotify Streams", xlab="Fitted")
+plot(e_hat ~ y_hat, ylab="Residuals", xlab="Fitted")
+for(i in feature_indices){
+ plot(e_hat ~ spotify_time[,i], ylab="Residuals", xlab=names(spotify_time)[i])
 }
+plot(e_hat, ylab="Residuals", xlab="Observation number")
+qqnorm(e_hat)
+qqline(e_hat)
+```
+
+The above model has decently large $R^2$ and adjusted $R^2$, but there are clearly assumption violations
+
+```{r}
+# boxCox transformation applied to response variable
+bc <- boxCox(reduced_time_model3)
+
+yLambda <- bc$x[which.max(bc$y)]
+
+# Apply power transformation to predictor variables
+tfs <- powerTransform(cbind(spotify_time[,feature_indices]))
+summary(tfs)
+```
+
+```{r}
+# Add transformed column
+spotify_time$tf_streams <- (spotify_time$Spotify.Streams)**(2/5)
+```
+
+
+```{r}
+tf_reduced_time_model1 <- lm(tf_streams ~ time + Spotify.Playlist.Count + YouTube.Likes + TikTok.Posts + Apple.Music.Playlist.Count, data=spotify_time)
+summary(tf_reduced_time_model1)
+```
+
+```{r}
+tf_features <- c("tf_streams", "time", "Spotify.Playlist.Count",
+              "YouTube.Likes", "TikTok.Posts", 
+              "Apple.Music.Playlist.Count")
 ```
 
 
 ```{r, echo=F, fig.width=8, fig.height=11}
-e_hat <- resid(preliminary_model)
-y_hat <- fitted(preliminary_model)
+e_hat <- resid(tf_reduced_time_model1)
+y_hat <- fitted(tf_reduced_time_model1)
 
-feature_indices <- match(features, names(spotify_clean))
+feature_indices <- match(tf_features, names(spotify_time))
 
 par(mfrow=c(4,3))
-plot(spotify_clean$Spotify.Streams ~ y_hat, ylab="Spotify Streams", xlab="Fitted")
 plot(e_hat ~ y_hat, ylab="Residuals", xlab="Fitted")
 for(i in feature_indices){
- plot(e_hat ~ spotify_clean[,i], ylab="Residuals", xlab=names(spotify_clean)[i])
+ plot(e_hat ~ spotify_time[,i], ylab="Residuals", xlab=names(spotify_time)[i])
+}
+plot(e_hat, ylab="Residuals", xlab="Observation number")
+qqnorm(e_hat)
+qqline(e_hat)
+```
+
+Normality violation is mitigated but non-linearity and non-constant variance are still present
+
+```{r}
+# boxCox transformation applied to response variable
+bc <- boxCox(tf_reduced_time_model1)
+
+X <- spotify_time[, feature_indices]
+
+# Shift features if needed
+for (j in seq_along(X)) {
+  min_val <- min(X[, j], na.rm = TRUE)
+  if (min_val <= 0) {
+    X[, j] <- X[, j] + abs(min_val) + 1  # Shift to make strictly positive
+  }
+}
+
+# Apply power transformation
+tfs <- powerTransform(X)
+summary(tfs)
+```
+
+```{r}
+# Add sqrt-transformed column
+spotify_time$tf_time <- (spotify_time$time) ** 5
+
+# Optional: view first few rows to verify
+head(spotify_time[, c("time", "tf_time")])
+```
+
+```{r}
+tf_reduced_time_model2 <- lm(tf_streams ~ tf_time + Spotify.Playlist.Count + YouTube.Likes + TikTok.Posts + Apple.Music.Playlist.Count, data=spotify_time)
+summary(tf_reduced_time_model2)
+```
+
+```{r}
+tf_features <- c("tf_streams", "tf_time", "Spotify.Playlist.Count",
+              "YouTube.Likes", "TikTok.Posts", 
+              "Apple.Music.Playlist.Count")
+```
+
+
+```{r, echo=F, fig.width=8, fig.height=11}
+e_hat <- resid(tf_reduced_time_model2)
+y_hat <- fitted(tf_reduced_time_model2)
+
+feature_indices <- match(tf_features, names(spotify_time))
+
+par(mfrow=c(4,3))
+plot(e_hat ~ y_hat, ylab="Residuals", xlab="Fitted")
+for(i in feature_indices){
+ plot(e_hat ~ spotify_time[,i], ylab="Residuals", xlab=names(spotify_time)[i])
+}
+plot(e_hat, ylab="Residuals", xlab="Observation number")
+qqnorm(e_hat)
+qqline(e_hat)
+```
+
+non-constant variance are slightly mitigated, but non-linearity are still present. Apply more transformations
+
+```{r}
+# Add transformed column
+spotify_time$tf_youtube <- (spotify_time$YouTube.Likes)**(0.3)
+spotify_time$tf_tiktok <- (spotify_time$TikTok.Posts)**(0.2)
+spotify_time$tf_apple <- (spotify_time$Apple.Music.Playlist.Count)**(0.2)
+```
+
+```{r}
+tf_reduced_time_model3 <- lm(tf_streams ~ tf_time + Spotify.Playlist.Count + tf_youtube + tf_tiktok + Apple.Music.Playlist.Count + tf_time:Spotify.Playlist.Count, data=spotify_time)
+summary(tf_reduced_time_model3)
+```
+
+```{r}
+tf_features <- c("tf_streams", "tf_time", "Spotify.Playlist.Count",
+              "tf_youtube", "tf_tiktok", 
+              "tf_apple")
+```
+
+
+```{r, echo=F, fig.width=8, fig.height=11}
+e_hat <- resid(tf_reduced_time_model3)
+y_hat <- fitted(tf_reduced_time_model3)
+
+feature_indices <- match(tf_features, names(spotify_time))
+
+par(mfrow=c(4,3))
+plot(e_hat ~ y_hat, ylab="Residuals", xlab="Fitted")
+for(i in feature_indices){
+ plot(e_hat ~ spotify_time[,i], ylab="Residuals", xlab=names(spotify_time)[i])
 }
 plot(e_hat, ylab="Residuals", xlab="Observation number")
 qqnorm(e_hat)
@@ -267,83 +467,284 @@ qqline(e_hat)
 ```
 
 ```{r}
-# Fit models to test if interaction is significant
-spotify_no_interaction <- lm(Spotify.Streams ~ Spotify.Playlist.Count + YouTube.Views + YouTube.Likes + TikTok.Posts + TikTok.Views + Apple.Music.Playlist.Count + Shazam.Counts + AirPlay.Spins + Explicit.Track, data=spotify_clean)
-
-# Compare models
-anova(spotify_no_interaction, preliminary_model)
-```
-
-Since partial F test gives a p-value of 1.111e-0.6 smaller than $\alpha$ = 0.05, the relationship between Spotify Playlist Count and Spotify Streams differs (statistically) significantly between Explicit and non-Explicit Track.
-
-```{r}
-pairs(spotify_clean[, features])
-```
-
-## Potential assumption violation improvement strategies
-
-The below section is temporarily commented out, and might be applied in future
-
-```{r}
-# # boxCox transformation applied to response variable
-# bc <- boxCox(preliminary_model)
-# 
-# yLambda <- bc$x[which.max(bc$y)]
-# 
-# # Apply power transformation to predictor variables
-# tfs <- powerTransform(cbind(spotify_clean[,feature_indices]))
-# summary(tfs)
+n <- nrow(spotify_time)
+p <- length(coef(tf_reduced_time_model3))-1
+hcut <- 2*(p + 1)/n
+cookcut <- qf(0.5, df1=p+1, df2=n-p-1)
+fitcut <- 2 * sqrt((p + 1) / n)
+betacut <- 2 / sqrt(n)
 ```
 
 ```{r}
-# rtSpotifyStreams <- (spotify_clean$Spotify.Streams)^yLambda
-# 
-# lambdas <- coef(tfs, round = TRUE)
-# 
-# # Make a copy of cleaned spotify data for transformatons
-# spotify_transformed <- spotify_clean
-# 
-# for(i in 1:length(feature_indices)) {
-#   var_name <- features[i]
-#   lambda <- lambdas[i]
-#   
-#   cat(sprintf("Transforming %s with lambda = %.2f\n", var_name, lambda))
-#   
-#   # Apply Box-Cox transformation
-#   spotify_transformed[[var_name]] <- bcPower(spotify_clean[[var_name]], lambda)
-# }
+h_ii <- hatvalues(tf_reduced_time_model3)
+r_i <- rstandard(tf_reduced_time_model3)
+D_i <- cooks.distance(tf_reduced_time_model3)
+dffits_i <- dffits(tf_reduced_time_model3)
+dfbetas_i <- dfbetas(tf_reduced_time_model3)
+```
+
+
+```{r}
+# indices flagged by each rule
+lev_idx      <- which(h_ii > hcut)                       # leverage points
+reg_out_idx  <- which(r_i > 4 | r_i < -4)                # regression outliers
+cook_idx     <- which(D_i > cookcut)                     # Cook's distance
+dffits_idx   <- which(abs(dffits_i) > fitcut)            # DFFITS
+dfbetas_idx  <- which(apply(abs(dfbetas_i) > betacut, 1, any))  # any beta
 ```
 
 ```{r}
-# # fitting a new model with transformations applied
-# model_transformed <- lm(rtSpotifyStreams ~ Spotify.Playlist.Count + YouTube.Views + YouTube.Likes + TikTok.Posts + TikTok.Views + Apple.Music.Playlist.Count + Shazam.Counts + AirPlay.Spins + Explicit.Track, data=spotify_clean)
-# 
-# summary(model_transformed)
+all_influential_idx <- sort(unique(c(
+  lev_idx,
+  reg_out_idx,
+  cook_idx,
+  dffits_idx,
+  dfbetas_idx
+)))
 ```
+
+```{r}
+# proportion of influential points
+prop_influential <- length(all_influential_idx) / n
+
+prop_influential
+```
+
+```{r}
+# index of most influential point among all observations
+most_inf_idx <- which.max(D_i)
+
+most_inf_idx
+```
+
+After verifying this entry is incorrectly labelled, so is thus removed
+
+```{r}
+spotify_time <- spotify_time[-most_inf_idx, ]
+```
+
+```{r}
+tf_reduced_time_model4 <- lm(tf_streams ~ tf_time + Spotify.Playlist.Count + tf_youtube + tf_tiktok + Apple.Music.Playlist.Count + tf_time:Spotify.Playlist.Count, data=spotify_time)
+summary(tf_reduced_time_model3)
+```
+
+```{r}
+tf_features <- c("tf_streams", "tf_time", "Spotify.Playlist.Count",
+              "tf_youtube", "tf_tiktok", 
+              "tf_apple")
+```
+
 
 ```{r, echo=F, fig.width=8, fig.height=11}
-# e_hat_transformed <- resid(model_transformed)
-# y_hat_transformed <- fitted(model_transformed)
-# 
-# feature_indices <- match(features, names(spotify_transformed))
-# 
-# par(mfrow=c(4,3))
-# plot(spotify_transformed$Spotify.Streams ~ y_hat, ylab="Spotify Streams", xlab="Fitted")
-# plot(e_hat_transformed ~ y_hat_transformed, ylab="Residuals", xlab="Fitted")
-# for(i in feature_indices){
-#  plot(e_hat_transformed ~ spotify_transformed[,i], ylab="Residuals", xlab=names(spotify_transformed)[i])
-# }
-# plot(e_hat_transformed, ylab="Residuals", xlab="Observation number")
-# qqnorm(e_hat_transformed)
-# qqline(e_hat_transformed)
+e_hat <- resid(tf_reduced_time_model4)
+y_hat <- fitted(tf_reduced_time_model4)
+
+feature_indices <- match(tf_features, names(spotify_time))
+
+par(mfrow=c(4,3))
+plot(e_hat ~ y_hat, ylab="Residuals", xlab="Fitted")
+for(i in feature_indices){
+ plot(e_hat ~ spotify_time[,i], ylab="Residuals", xlab=names(spotify_time)[i])
+}
+plot(e_hat, ylab="Residuals", xlab="Observation number")
+qqnorm(e_hat)
+qqline(e_hat)
 ```
 
-The preliminary fitted model is $$Spotify.Playlist.Count = -22100000 + 4325\text{Spotify.Playlist Count} + 0.02179\text{YouTube.Views} + 11.7\text{YouTube.Likes} + 31.6\text{TikTok.Posts} + 0.02417\text{TikTok.Views} + 1682000\text{Apple.Music.Playlist.Count} + 8.444\text{Shazam.Counts} - 0.03575\text{AirPlay.Spins} + 7944000\text{Explicit.Track} - -90.08\text{Spotify.Playlist.Count}*{Explicit.Track}$$ Firstly, we check the conditional mean response condition to make sure that the observations from residual plots are conclusive. From each response vs. predictor plot, there is no obvious non-linear relationship from the plot, so the conditional mean response condition holds. Also, from scatter plot between each pair of predictor, no pair of predictors seem to exhibit a significant non-linear pattern, so the conditional mean predictor condition also holds.
+```{r}
+vif(tf_reduced_time_model4)
+```
 
-Secondly, from the residual vs. fitted plot, a clear fanning pattern is present indicating a non-constant variance in the residuals. Also, the qqnorm plot demonstrates a non-linear pattern and largely deviates at the head and tail of the distribution. This indicates a violation in the normality assumption. In the observation of residual vs. fitted and each pair of residual vs. predictor, there is no obvious non-linear pattern or clustering presented, after examining the nature of each feature, there is likely no violation in the linearity and uncorrelated error assumption.
 
-# Ethics Discussion
+TODO: ANOVA to justify model parameters changes and discuss problematic Observations
 
-# Plan
+# Visualization for Poster
 
-# Bibliography
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+prepare_variance_data <- function(model, model_name) {
+  y_obs <- model$model[[1]]
+  residuals <- resid(model)
+  
+  # Shift residuals to align with Y mean for visual comparison
+  y_mean <- mean(y_obs)
+  residuals_shifted <- residuals + y_mean
+  
+  df_total <- data.frame(Value = y_obs, Type = "Total Variation (Y)")
+  df_resid <- data.frame(Value = residuals_shifted, Type = "Unexplained Variation (Residuals)")
+  
+  rbind(df_total, df_resid)
+}
+
+# Prepare data for Final Model only
+plot_data <- prepare_variance_data(tf_reduced_time_model4, "Final Model")
+
+ggplot(plot_data, aes(x = Type, y = Value, fill = Type)) +
+  geom_violin(alpha = 0.8, color = "black", scale = "width") +
+  geom_boxplot(width = 0.1, fill = "white", alpha = 0.5, outlier.shape = NA) +
+  scale_fill_manual(values = c("Total Variation (Y)" = "#FFC107", 
+                               "Unexplained Variation (Residuals)" = "#00B0FF")) +
+  labs(
+    title = "Variance Decomposition: Final Model",
+    subtitle = "Explained vs. Unexplained Variation",
+    y = "Transformed Stream Value",
+    x = ""
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+```{r}
+# Define the predictors used in the Final Model
+# Note: Based on the model formula, Apple Music Count is used in its raw form, not transformed.
+final_predictors <- c("tf_time", "Spotify.Playlist.Count", 
+                      "tf_youtube", "tf_tiktok", "Apple.Music.Playlist.Count")
+
+# Create a subset of the data with readable labels
+plot_data <- spotify_time[, final_predictors]
+colnames(plot_data) <- c("Time^5", "Spotify\nPlaylists", 
+                         "YouTube\n(Transformed)", "TikTok\n(Transformed)", "Apple Music\nPlaylists")
+
+# Generate Scatterplot Matrix
+# 1. Define a transparent blue color using base R functions
+# rgb(red, green, blue, alpha) where alpha is 0-1
+my_color <- rgb(0, 0, 0.55, alpha = 0.4)
+
+# 2. Run the pairs plot
+pairs(plot_data, 
+      main = "Predictor vs. Predictor Relationships (Final Model)",
+      pch = 19, 
+      col = my_color,
+      lower.panel = NULL)
+```
+
+```{r}
+library(ggplot2)
+library(broom)
+library(dplyr)
+
+# 1. Extract coefficients and confidence intervals
+# 'conf.int = TRUE' calculates the 95% CI automatically
+model_data <- tidy(tf_reduced_time_model4, conf.int = TRUE) %>%
+  filter(term != "(Intercept)")
+
+# 2. Standardize the Estimates and CIs
+# This scales them by SD_x / SD_y so they are comparable
+sd_y <- sd(tf_reduced_time_model4$model[[1]])
+sd_x <- apply(model.matrix(tf_reduced_time_model4)[, -1], 2, sd)
+
+# Match the SDs to the terms in the dataframe
+# We use match() to ensure the order is correct even if rows were reordered
+scaling_factors <- (sd_x[model_data$term] / sd_y)
+
+model_data <- model_data %>%
+  mutate(
+    std_estimate = estimate * scaling_factors,
+    std_conf.low = conf.low * scaling_factors,
+    std_conf.high = conf.high * scaling_factors
+  )
+
+# 3. Create the Plot
+ggplot(model_data, aes(x = std_estimate, y = reorder(term, abs(std_estimate)))) +
+  # Point representing the coefficient estimate
+  geom_point(size = 3, color = "#2E86C1") +
+  
+  # Error bars representing the 95% Confidence Interval
+  geom_errorbarh(aes(xmin = std_conf.low, xmax = std_conf.high), height = 0.2, color = "#2E86C1") +
+  
+  # Vertical line at 0 (Significance threshold)
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+  
+  labs(
+    title = "Standardized Coefficients with 95% Confidence Intervals",
+    subtitle = "Final Model (tf_reduced_time_model4)",
+    x = "Standardized Effect on Streams (Beta)",
+    y = "Predictor"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_text(size = 10, face = "bold"),
+    panel.grid.major.y = element_blank() # Cleaner look
+  )
+```
+
+```{r}
+library(zoo)
+
+# --- 1. Define Helper Functions ---
+clean_numeric <- function(x) {
+  # Convert to character first to handle factors, then remove commas/spaces
+  x_clean <- gsub(",", "", as.character(x))
+  x_clean <- gsub(" ", "", x_clean)
+  as.numeric(x_clean)
+}
+
+# --- 2. Clean Raw Columns ---
+# We clean the columns required for the Final Model + Response
+cols_to_clean <- c("YouTube.Likes", "TikTok.Posts", "Spotify.Streams", 
+                   "Spotify.Playlist.Count", "Apple.Music.Playlist.Count")
+
+for(col in cols_to_clean) {
+  if(col %in% names(test_data)) {
+    test_data[[col]] <- clean_numeric(test_data[[col]])
+  }
+}
+
+# --- 3. Handle Dates & Time Feature ---
+# Ensure Date format matches your CSV (check if it is d/m/y or y-m-d)
+test_data$Release.Date <- as.Date(test_data$Release.Date, format = "%d/%m/%Y")
+
+# Recalculate Baseline (Hardcoded from your training set analysis to ensure consistency)
+# Ideally, replace this with the actual baseline date from your training set object
+# For now, we calculate it dynamically if the training set 'spotify_time' is available, else we guess.
+if(exists("spotify_time")) {
+    baseline_date <- min(spotify_time$Release.Date, na.rm = TRUE)
+} else {
+    # Fallback: Use min of test if training not avail (Warning: this might be slightly off)
+    baseline_date <- min(test_data$Release.Date, na.rm = TRUE)
+}
+
+test_data$time <- round(as.numeric(
+  (as.yearmon(test_data$Release.Date) - as.yearmon(baseline_date)) * 12
+))
+
+# --- 4. Remove NAs BEFORE Transformation ---
+# Identify rows that have NAs in the key columns
+cols_needed <- c("time", "YouTube.Likes", "TikTok.Posts", "Spotify.Streams", 
+                 "Spotify.Playlist.Count", "Apple.Music.Playlist.Count")
+
+# Keep only complete cases
+test_data_clean <- test_data[complete.cases(test_data[, cols_needed]), ]
+
+cat(sprintf("Original rows: %d | Cleaned rows: %d | Dropped: %d\n", 
+            nrow(test_data), nrow(test_data_clean), nrow(test_data) - nrow(test_data_clean)))
+
+# --- 5. Apply Transformations (On Clean Data) ---
+test_data_clean$tf_time    <- (test_data_clean$time) ^ 5
+test_data_clean$tf_youtube <- (test_data_clean$YouTube.Likes) ^ 0.3
+test_data_clean$tf_tiktok  <- (test_data_clean$TikTok.Posts) ^ 0.2
+test_data_clean$tf_streams <- (test_data_clean$Spotify.Streams) ^ (2/5)
+
+# --- 6. Run Prediction ---
+# Use the cleaned dataset
+test_predictions <- predict(tf_reduced_time_model4, newdata = test_data_clean)
+test_actuals <- test_data_clean$tf_streams
+
+# Calculate Metrics
+# na.rm = TRUE added as a final safety net
+rss_test <- sum((test_actuals - test_predictions)^2, na.rm = TRUE)
+tss_test <- sum((test_actuals - mean(test_actuals, na.rm = TRUE))^2, na.rm = TRUE)
+
+r2_test <- 1 - (rss_test / tss_test)
+rmse_test <- sqrt(mean((test_actuals - test_predictions)^2, na.rm = TRUE))
+
+# Output
+cat("Test Data Performance:\n")
+cat("----------------------\n")
+cat(sprintf("Prediction R-squared: %.4f\n", r2_test))
+cat(sprintf("Test RMSE: %.4f\n", rmse_test))
+```
+
