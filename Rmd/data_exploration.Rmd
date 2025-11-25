@@ -1,5 +1,5 @@
 ---
-title: "data_exploration"
+title: "final_model"
 author: "Tianyu Luo; Nanxin Li; Xuanbo Han"
 output: pdf_document
 geometry: margin=0.5in
@@ -22,6 +22,15 @@ data <- read.csv("../data/most-streamed-spotify-songs-2024.csv")
 ```
 
 ## Data Cleaning
+
+```{r}
+set.seed(123)  # for reproducibility
+train_index <- sample(seq_len(nrow(data)), size = 0.7 * nrow(data))
+
+train_data <- data[train_index, ]
+test_data  <- data[-train_index, ]
+```
+
 
 ```{r}
 # Check data types
@@ -63,16 +72,16 @@ convert_to_numeric <- function(x) {
 }
 
 for(col in features) {
-  data[[col]] <- convert_to_numeric(data[[col]])
+  train_data[[col]] <- convert_to_numeric(train_data[[col]])
 }
-cat("Number of rows remaining:", nrow(data), "\n")
+cat("Number of rows remaining:", nrow(train_data), "\n")
 ```
 
 ```{r}
 # Check which rows have complete data for key variables
-complete_rows <- complete.cases(data[, features])
+complete_rows <- complete.cases(train_data[, features])
 # Keep only the rows with non-missing values for all features
-spotify_clean <- data[complete_rows, ]
+spotify_clean <- train_data[complete_rows, ]
 
 cat("Number of rows remaining:", nrow(spotify_clean), "\n")
 ```
@@ -82,8 +91,8 @@ Since after cleaning the dataset, we are remained with 2916 valid entries, we ca
 ```{r}
 # Remove Duplicate data from dataset (prevent the same song being used twice in the model)
 # Check for duplicate ISRCs since the same ISRC represent the same song
-if("ISRC" %in% names(data)) {
-  duplicate_isrc <- sum(duplicated(data$ISRC))
+if("ISRC" %in% names(train_data)) {
+  duplicate_isrc <- sum(duplicated(train_data$ISRC))
   cat("Songs with duplicate ISRC:", duplicate_isrc, "\n")
   
   # Remove duplicates by ISRC, keeping first occurrence
@@ -543,48 +552,199 @@ qqline(e_hat)
 ```
 
 ```{r}
-# Load broom for tidy extraction (part of tidyverse)
-library(broom)
-
-# 1. Helper function to calculate Standardized Coefficients
-get_std_coefs <- function(model, model_name) {
-  # Extract coefficients
-  tidy_df <- tidy(model) %>% filter(term != "(Intercept)")
-  
-  # Get Standard Deviations of Y (Response) and X (Predictors)
-  sd_y <- sd(model$model[[1]])
-  # Use model.matrix to correctly handle interaction terms and transforms
-  sd_x <- apply(model.matrix(model)[, -1], 2, sd) 
-  
-  # Calculate Standardized Estimate: Beta * (SD_x / SD_y)
-  tidy_df$std_estimate <- tidy_df$estimate * (sd_x[tidy_df$term] / sd_y)
-  
-  # Add Model Label
-  tidy_df$model_label <- model_name
-  return(tidy_df)
-}
-
-# 2. Combine Data from both models
-# Note: Using 'tf_reduced_time_model4' as your final model
-plot_data <- rbind(
-  get_std_coefs(preliminary_model, "Preliminary (Raw)"),
-  get_std_coefs(tf_reduced_time_model4, "Final (Transformed)")
-)
-
-# 3. Create the Forest Plot
-ggplot(plot_data, aes(x = std_estimate, y = reorder(term, abs(std_estimate)), color = model_label)) +
-  geom_point(size = 3) +
-  geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
-  labs(
-    title = "Comparison of Standardized Coefficients",
-    subtitle = "Relative importance of predictors (scaled by Standard Deviation)",
-    x = "Standardized Effect Size (Beta)",
-    y = "Predictor",
-    color = "Model"
-  ) +
-  theme_minimal() +
-  theme(legend.position = "bottom")
+vif(tf_reduced_time_model4)
 ```
 
 
 TODO: ANOVA to justify model parameters changes and discuss problematic Observations
+
+# Visualization for Poster
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+prepare_variance_data <- function(model, model_name) {
+  y_obs <- model$model[[1]]
+  residuals <- resid(model)
+  
+  # Shift residuals to align with Y mean for visual comparison
+  y_mean <- mean(y_obs)
+  residuals_shifted <- residuals + y_mean
+  
+  df_total <- data.frame(Value = y_obs, Type = "Total Variation (Y)")
+  df_resid <- data.frame(Value = residuals_shifted, Type = "Unexplained Variation (Residuals)")
+  
+  rbind(df_total, df_resid)
+}
+
+# Prepare data for Final Model only
+plot_data <- prepare_variance_data(tf_reduced_time_model4, "Final Model")
+
+ggplot(plot_data, aes(x = Type, y = Value, fill = Type)) +
+  geom_violin(alpha = 0.8, color = "black", scale = "width") +
+  geom_boxplot(width = 0.1, fill = "white", alpha = 0.5, outlier.shape = NA) +
+  scale_fill_manual(values = c("Total Variation (Y)" = "#FFC107", 
+                               "Unexplained Variation (Residuals)" = "#00B0FF")) +
+  labs(
+    title = "Variance Decomposition: Final Model",
+    subtitle = "Explained vs. Unexplained Variation",
+    y = "Transformed Stream Value",
+    x = ""
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+```{r}
+# Define the predictors used in the Final Model
+# Note: Based on the model formula, Apple Music Count is used in its raw form, not transformed.
+final_predictors <- c("tf_time", "Spotify.Playlist.Count", 
+                      "tf_youtube", "tf_tiktok", "Apple.Music.Playlist.Count")
+
+# Create a subset of the data with readable labels
+plot_data <- spotify_time[, final_predictors]
+colnames(plot_data) <- c("Time^5", "Spotify\nPlaylists", 
+                         "YouTube\n(Transformed)", "TikTok\n(Transformed)", "Apple Music\nPlaylists")
+
+# Generate Scatterplot Matrix
+# 1. Define a transparent blue color using base R functions
+# rgb(red, green, blue, alpha) where alpha is 0-1
+my_color <- rgb(0, 0, 0.55, alpha = 0.4)
+
+# 2. Run the pairs plot
+pairs(plot_data, 
+      main = "Predictor vs. Predictor Relationships (Final Model)",
+      pch = 19, 
+      col = my_color,
+      lower.panel = NULL)
+```
+
+```{r}
+library(ggplot2)
+library(broom)
+library(dplyr)
+
+# 1. Extract coefficients and confidence intervals
+# 'conf.int = TRUE' calculates the 95% CI automatically
+model_data <- tidy(tf_reduced_time_model4, conf.int = TRUE) %>%
+  filter(term != "(Intercept)")
+
+# 2. Standardize the Estimates and CIs
+# This scales them by SD_x / SD_y so they are comparable
+sd_y <- sd(tf_reduced_time_model4$model[[1]])
+sd_x <- apply(model.matrix(tf_reduced_time_model4)[, -1], 2, sd)
+
+# Match the SDs to the terms in the dataframe
+# We use match() to ensure the order is correct even if rows were reordered
+scaling_factors <- (sd_x[model_data$term] / sd_y)
+
+model_data <- model_data %>%
+  mutate(
+    std_estimate = estimate * scaling_factors,
+    std_conf.low = conf.low * scaling_factors,
+    std_conf.high = conf.high * scaling_factors
+  )
+
+# 3. Create the Plot
+ggplot(model_data, aes(x = std_estimate, y = reorder(term, abs(std_estimate)))) +
+  # Point representing the coefficient estimate
+  geom_point(size = 3, color = "#2E86C1") +
+  
+  # Error bars representing the 95% Confidence Interval
+  geom_errorbarh(aes(xmin = std_conf.low, xmax = std_conf.high), height = 0.2, color = "#2E86C1") +
+  
+  # Vertical line at 0 (Significance threshold)
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+  
+  labs(
+    title = "Standardized Coefficients with 95% Confidence Intervals",
+    subtitle = "Final Model (tf_reduced_time_model4)",
+    x = "Standardized Effect on Streams (Beta)",
+    y = "Predictor"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_text(size = 10, face = "bold"),
+    panel.grid.major.y = element_blank() # Cleaner look
+  )
+```
+
+```{r}
+library(zoo)
+
+# --- 1. Define Helper Functions ---
+clean_numeric <- function(x) {
+  # Convert to character first to handle factors, then remove commas/spaces
+  x_clean <- gsub(",", "", as.character(x))
+  x_clean <- gsub(" ", "", x_clean)
+  as.numeric(x_clean)
+}
+
+# --- 2. Clean Raw Columns ---
+# We clean the columns required for the Final Model + Response
+cols_to_clean <- c("YouTube.Likes", "TikTok.Posts", "Spotify.Streams", 
+                   "Spotify.Playlist.Count", "Apple.Music.Playlist.Count")
+
+for(col in cols_to_clean) {
+  if(col %in% names(test_data)) {
+    test_data[[col]] <- clean_numeric(test_data[[col]])
+  }
+}
+
+# --- 3. Handle Dates & Time Feature ---
+# Ensure Date format matches your CSV (check if it is d/m/y or y-m-d)
+test_data$Release.Date <- as.Date(test_data$Release.Date, format = "%d/%m/%Y")
+
+# Recalculate Baseline (Hardcoded from your training set analysis to ensure consistency)
+# Ideally, replace this with the actual baseline date from your training set object
+# For now, we calculate it dynamically if the training set 'spotify_time' is available, else we guess.
+if(exists("spotify_time")) {
+    baseline_date <- min(spotify_time$Release.Date, na.rm = TRUE)
+} else {
+    # Fallback: Use min of test if training not avail (Warning: this might be slightly off)
+    baseline_date <- min(test_data$Release.Date, na.rm = TRUE)
+}
+
+test_data$time <- round(as.numeric(
+  (as.yearmon(test_data$Release.Date) - as.yearmon(baseline_date)) * 12
+))
+
+# --- 4. Remove NAs BEFORE Transformation ---
+# Identify rows that have NAs in the key columns
+cols_needed <- c("time", "YouTube.Likes", "TikTok.Posts", "Spotify.Streams", 
+                 "Spotify.Playlist.Count", "Apple.Music.Playlist.Count")
+
+# Keep only complete cases
+test_data_clean <- test_data[complete.cases(test_data[, cols_needed]), ]
+
+cat(sprintf("Original rows: %d | Cleaned rows: %d | Dropped: %d\n", 
+            nrow(test_data), nrow(test_data_clean), nrow(test_data) - nrow(test_data_clean)))
+
+# --- 5. Apply Transformations (On Clean Data) ---
+test_data_clean$tf_time    <- (test_data_clean$time) ^ 5
+test_data_clean$tf_youtube <- (test_data_clean$YouTube.Likes) ^ 0.3
+test_data_clean$tf_tiktok  <- (test_data_clean$TikTok.Posts) ^ 0.2
+test_data_clean$tf_streams <- (test_data_clean$Spotify.Streams) ^ (2/5)
+
+# --- 6. Run Prediction ---
+# Use the cleaned dataset
+test_predictions <- predict(tf_reduced_time_model4, newdata = test_data_clean)
+test_actuals <- test_data_clean$tf_streams
+
+# Calculate Metrics
+# na.rm = TRUE added as a final safety net
+rss_test <- sum((test_actuals - test_predictions)^2, na.rm = TRUE)
+tss_test <- sum((test_actuals - mean(test_actuals, na.rm = TRUE))^2, na.rm = TRUE)
+
+r2_test <- 1 - (rss_test / tss_test)
+rmse_test <- sqrt(mean((test_actuals - test_predictions)^2, na.rm = TRUE))
+
+# Output
+cat("Test Data Performance:\n")
+cat("----------------------\n")
+cat(sprintf("Prediction R-squared: %.4f\n", r2_test))
+cat(sprintf("Test RMSE: %.4f\n", rmse_test))
+```
+
