@@ -542,4 +542,49 @@ qqnorm(e_hat)
 qqline(e_hat)
 ```
 
+```{r}
+# Load broom for tidy extraction (part of tidyverse)
+library(broom)
+
+# 1. Helper function to calculate Standardized Coefficients
+get_std_coefs <- function(model, model_name) {
+  # Extract coefficients
+  tidy_df <- tidy(model) %>% filter(term != "(Intercept)")
+  
+  # Get Standard Deviations of Y (Response) and X (Predictors)
+  sd_y <- sd(model$model[[1]])
+  # Use model.matrix to correctly handle interaction terms and transforms
+  sd_x <- apply(model.matrix(model)[, -1], 2, sd) 
+  
+  # Calculate Standardized Estimate: Beta * (SD_x / SD_y)
+  tidy_df$std_estimate <- tidy_df$estimate * (sd_x[tidy_df$term] / sd_y)
+  
+  # Add Model Label
+  tidy_df$model_label <- model_name
+  return(tidy_df)
+}
+
+# 2. Combine Data from both models
+# Note: Using 'tf_reduced_time_model4' as your final model
+plot_data <- rbind(
+  get_std_coefs(preliminary_model, "Preliminary (Raw)"),
+  get_std_coefs(tf_reduced_time_model4, "Final (Transformed)")
+)
+
+# 3. Create the Forest Plot
+ggplot(plot_data, aes(x = std_estimate, y = reorder(term, abs(std_estimate)), color = model_label)) +
+  geom_point(size = 3) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
+  labs(
+    title = "Comparison of Standardized Coefficients",
+    subtitle = "Relative importance of predictors (scaled by Standard Deviation)",
+    x = "Standardized Effect Size (Beta)",
+    y = "Predictor",
+    color = "Model"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+
 TODO: ANOVA to justify model parameters changes and discuss problematic Observations
