@@ -10,11 +10,13 @@ urlcolor: blue
 # If library imports failed, uncomment to install packages
 # install.packages("car")
 # install.packages("zoo")
+# install.packages("stargazer")
 
 # Library imports
 library(tidyverse)
 library(car)
 library(zoo)
+library(stargazer)
 
 # load the dataset
 # If you are using vs code, please remove the ../ from the path.
@@ -531,70 +533,203 @@ summary(tf_reduced_time_model3)
 ```{r}
 tf_features <- c("tf_streams", "tf_time", "Spotify.Playlist.Count",
               "tf_youtube", "tf_tiktok", 
-              "tf_apple")
+              "Apple.Music.Playlist.Count")
 ```
 
-
 ```{r, echo=F, fig.width=8, fig.height=11}
-e_hat <- resid(tf_reduced_time_model4)
-y_hat <- fitted(tf_reduced_time_model4)
+library(ggplot2)
 
-feature_indices <- match(tf_features, names(spotify_time))
+# 1. Setup Data
+plot_data <- spotify_time
+plot_data$Residuals <- resid(tf_reduced_time_model4)
+plot_data$Fitted <- fitted(tf_reduced_time_model4)
 
-par(mfrow=c(4,3))
-plot(e_hat ~ y_hat, ylab="Residuals", xlab="Fitted")
-for(i in feature_indices){
- plot(e_hat ~ spotify_time[,i], ylab="Residuals", xlab=names(spotify_time)[i])
+# 2. Define Labels for ALL variables (Original + Transformed)
+axis_labels <- c(
+  # Original / Untransformed
+  "time" = "Time",
+  "Spotify.Playlist.Count" = "Spotify Playlist Count",
+  "YouTube.Likes" = "YouTube Likes",
+  "TikTok.Posts" = "TikTok Posts",
+  "Apple.Music.Playlist.Count" = "Apple Music Playlist Count",
+  
+  # Transformed
+  "tf_time" = "Time^(0.3)",
+  "tf_youtube" = "YouTube Likes^(0.2)",
+  "tf_tiktok" = "TikTok Posts^(0.2)"
+)
+
+# 3. Define the Order of Variables
+# List 1: Original / Untransformed Variables
+raw_vars <- c("time", "Spotify.Playlist.Count", "YouTube.Likes", 
+              "TikTok.Posts", "Apple.Music.Playlist.Count")
+
+# List 2: Transformed Variables (Only the ones that changed)
+tf_vars  <- c("tf_time", "tf_youtube", "tf_tiktok")
+
+# Initialize list and counters
+my_plots <- list()
+fig_main <- 2  
+sub_count <- 1 
+
+# --- A. Residuals vs Fitted ---
+p <- ggplot(plot_data, aes(x = Fitted, y = Residuals)) +
+  geom_point(alpha = 0.5, color = "black") +
+  labs(
+    x = "Fitted Values", 
+    y = "Residuals",
+    title = paste0("Figure ", fig_main, ".", sub_count, ": Residuals vs Fitted")
+  ) +
+  theme_bw()
+
+my_plots[["Fitted"]] <- p
+sub_count <- sub_count + 1
+
+# --- B. Loop for UNTRANSFORMED Predictors ---
+for(var in raw_vars){
+  nice_label <- ifelse(var %in% names(axis_labels), axis_labels[var], var)
+  
+  p <- ggplot(plot_data, aes_string(x = var, y = "Residuals")) +
+    geom_point(alpha = 0.5) +
+    labs(
+      x = nice_label, 
+      y = "Residuals",
+      title = paste0("Figure ", fig_main, ".", sub_count, ": Resid vs ", nice_label)
+    ) +
+    theme_bw() +
+    theme(plot.title = element_text(size=10))
+  
+  my_plots[[var]] <- p
+  sub_count <- sub_count + 1
 }
-plot(e_hat, ylab="Residuals", xlab="Observation number")
-qqnorm(e_hat)
-qqline(e_hat)
+
+# --- C. Loop for TRANSFORMED Predictors ---
+for(var in tf_vars){
+  nice_label <- ifelse(var %in% names(axis_labels), axis_labels[var], var)
+  
+  p <- ggplot(plot_data, aes_string(x = var, y = "Residuals")) +
+    geom_point(alpha = 0.5, color = "blue") + # Optional: Blue to distinguish transformed
+    labs(
+      x = nice_label, 
+      y = "Residuals",
+      title = paste0("Figure ", fig_main, ".", sub_count, ": Resid vs ", nice_label)
+    ) +
+    theme_bw() +
+    theme(plot.title = element_text(size=10))
+  
+  my_plots[[var]] <- p
+  sub_count <- sub_count + 1
+}
+
+# --- D. Normal Q-Q Plot ---
+p_qq <- ggplot(plot_data, aes(sample = Residuals)) +
+  stat_qq() +
+  stat_qq_line(color = "red") +
+  labs(
+    x = "Theoretical Quantiles", 
+    y = "Sample Quantiles",
+    title = paste0("Figure ", fig_main, ".", sub_count, ": Normal Q-Q Plot")
+  ) +
+  theme_bw()
+
+my_plots[["QQ"]] <- p_qq
+```
+
+```{r, echo=F, fig.width=4, fig.height=3}
+for(p in my_plots) print(p)
 ```
 
 ```{r}
 vif(tf_reduced_time_model4)
 ```
 
-
-TODO: ANOVA to justify model parameters changes and discuss problematic Observations
-
 # Visualization for Poster
 
 ```{r}
 library(ggplot2)
 library(dplyr)
-library(tidyr)
 
-prepare_variance_data <- function(model, model_name) {
-  y_obs <- model$model[[1]]
+# --- 1. Data Preparation Function ---
+prepare_combined_variance <- function(model, model_name) {
+  # Extract Data
+  y_obs <- model$model[[1]]  # The actual response values used in model
   residuals <- resid(model)
   
-  # Shift residuals to align with Y mean for visual comparison
+  # Center residuals around the mean of Y so they overlap correctly
   y_mean <- mean(y_obs)
   residuals_shifted <- residuals + y_mean
   
-  df_total <- data.frame(Value = y_obs, Type = "Total Variation (Y)")
-  df_resid <- data.frame(Value = residuals_shifted, Type = "Unexplained Variation (Residuals)")
+  # Create Data Frames
+  df_total <- data.frame(
+    Value = y_obs, 
+    Type = "Total Variation (Data)", 
+    Model = model_name
+  )
   
+  df_resid <- data.frame(
+    Value = residuals_shifted, 
+    Type = "Unexplained Variation (Residuals)", 
+    Model = model_name
+  )
+  
+  # Combine
   rbind(df_total, df_resid)
 }
 
-# Prepare data for Final Model only
-plot_data <- prepare_variance_data(tf_reduced_time_model4, "Final Model")
+# --- 2. Generate Data for Both Models ---
+# Note: Ensure 'preliminary_model' and 'tf_reduced_time_model4' are in your environment
+data_prelim <- prepare_combined_variance(preliminary_model, "1. Preliminary Model\n(Raw Scale)")
+data_final  <- prepare_combined_variance(tf_reduced_time_model4, "2. Final Model\n(Transformed Scale)")
 
-ggplot(plot_data, aes(x = Type, y = Value, fill = Type)) +
-  geom_violin(alpha = 0.8, color = "black", scale = "width") +
-  geom_boxplot(width = 0.1, fill = "white", alpha = 0.5, outlier.shape = NA) +
-  scale_fill_manual(values = c("Total Variation (Y)" = "#FFC107", 
-                               "Unexplained Variation (Residuals)" = "#00B0FF")) +
+# Combine into one plotting dataset
+plot_data_combined <- rbind(data_prelim, data_final)
+
+# Set Factor Levels to control layering order 
+# (We want Total on bottom, Residuals on top)
+plot_data_combined$Type <- factor(plot_data_combined$Type, 
+                                  levels = c("Total Variation (Data)", "Unexplained Variation (Residuals)"))
+
+# --- 3. Create the Overlapped Plot ---
+ggplot(plot_data_combined, aes(x = "Distribution", y = Value)) +
+  
+  # Layer 1: The Total Variation (The Background)
+  geom_violin(data = subset(plot_data_combined, Type == "Total Variation (Data)"),
+              aes(fill = Type), 
+              alpha = 0.3,          # Lighter transparency
+              color = NA,           # No border for the background
+              scale = "width",      # Maximize width
+              width = 0.8) +        # Make it wide
+  
+  # Layer 2: The Unexplained Variation (The Foreground)
+  geom_violin(data = subset(plot_data_combined, Type == "Unexplained Variation (Residuals)"),
+              aes(fill = Type), 
+              alpha = 0.8,          # More solid
+              color = "black",      # Add border for definition
+              scale = "width",      # Maximize width
+              width = 0.4) +        # Make it narrower so it sits "inside"
+  
+  # Faceting: Side-by-Side Comparison with Independent Scales
+  facet_wrap(~ Model, scales = "free_y") +
+  
+  # Colors
+  scale_fill_manual(values = c("Total Variation (Data)" = "#FFC107",       # Gold
+                               "Unexplained Variation (Residuals)" = "#00B0FF")) + # Blue
+  
+  # Labels and Theme
   labs(
-    title = "Variance Decomposition: Final Model",
-    subtitle = "Explained vs. Unexplained Variation",
-    y = "Transformed Stream Value",
-    x = ""
+    title = "Variance Decomposition: Model Improvement",
+    subtitle = "Gold Area = Explained Variance (R²); Blue Area = Unexplained Variance",
+    y = "Response Variable Distribution",
+    x = "",
+    fill = ""
   ) +
   theme_minimal() +
-  theme(legend.position = "none")
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_blank(), # Hide X axis text since we have legend
+    strip.text = element_text(size = 11, face = "bold"),
+    panel.grid.major.x = element_blank()
+  )
 ```
 
 ```{r}
@@ -605,8 +740,8 @@ final_predictors <- c("tf_time", "Spotify.Playlist.Count",
 
 # Create a subset of the data with readable labels
 plot_data <- spotify_time[, final_predictors]
-colnames(plot_data) <- c("Time^5", "Spotify\nPlaylists", 
-                         "YouTube\n(Transformed)", "TikTok\n(Transformed)", "Apple Music\nPlaylists")
+colnames(plot_data) <- c("Time^(0.3)", "Spotify\nPlaylists", 
+                         "YouTube\nLikes^(0.2)", "TikTok\nPosts^(0.2)", "Apple Music\nPlaylists")
 
 # Generate Scatterplot Matrix
 # 1. Define a transparent blue color using base R functions
@@ -660,7 +795,7 @@ ggplot(model_data, aes(x = std_estimate, y = reorder(term, abs(std_estimate)))) 
   
   labs(
     title = "Standardized Coefficients with 95% Confidence Intervals",
-    subtitle = "Final Model (tf_reduced_time_model4)",
+    subtitle = "Final Model",
     x = "Standardized Effect on Streams (Beta)",
     y = "Predictor"
   ) +
@@ -672,79 +807,362 @@ ggplot(model_data, aes(x = std_estimate, y = reorder(term, abs(std_estimate)))) 
 ```
 
 ```{r}
-library(zoo)
+# --- K-Fold Cross Validation (K=10) ---
 
-# --- 1. Define Helper Functions ---
-clean_numeric <- function(x) {
-  # Convert to character first to handle factors, then remove commas/spaces
-  x_clean <- gsub(",", "", as.character(x))
-  x_clean <- gsub(" ", "", x_clean)
-  as.numeric(x_clean)
+set.seed(302) # Ensure reproducibility
+
+# 1. Setup
+k <- 10
+n <- nrow(spotify_time)
+folds <- sample(rep(1:k, length.out = n)) # Assign each row to a random fold 1-10
+cv_rmse <- numeric(k) # Store RMSE for each fold
+cv_r2   <- numeric(k) # Store R^2 for each fold
+
+# 2. The Loop
+for(i in 1:k) {
+  
+  # a. Split data
+  test_indices <- which(folds == i)
+  cv_test_data <- spotify_time[test_indices, ]
+  cv_train_data <- spotify_time[-test_indices, ]
+  
+  # b. Fit model on the training folds (SAME formula as your final model)
+  # Formula: tf_streams ~ tf_time + Spotify.Playlist.Count + tf_youtube + tf_tiktok + Apple.Music.Playlist.Count + tf_time:Spotify.Playlist.Count
+  cv_model <- lm(tf_streams ~ tf_time + Spotify.Playlist.Count + tf_youtube + 
+                 tf_tiktok + Apple.Music.Playlist.Count + 
+                 tf_time:Spotify.Playlist.Count, 
+                 data = cv_train_data)
+  
+  # c. Predict on the test fold
+  preds <- predict(cv_model, newdata = cv_test_data)
+  actuals <- cv_test_data$tf_streams
+  
+  # d. Calculate Metrics for this fold
+  rss <- sum((actuals - preds)^2)
+  tss <- sum((actuals - mean(actuals))^2)
+  
+  cv_rmse[i] <- sqrt(mean((actuals - preds)^2)) # RMSE
+  cv_r2[i]   <- 1 - (rss / tss)                 # R-squared
 }
 
-# --- 2. Clean Raw Columns ---
-# We clean the columns required for the Final Model + Response
-cols_to_clean <- c("YouTube.Likes", "TikTok.Posts", "Spotify.Streams", 
-                   "Spotify.Playlist.Count", "Apple.Music.Playlist.Count")
+# 3. Output Results
+cat("--- 10-Fold Cross Validation Results ---\n")
+cat(sprintf("Average RMSE: %.4f (SD: %.4f)\n", mean(cv_rmse), sd(cv_rmse)))
+cat(sprintf("Average R^2:  %.4f (SD: %.4f)\n", mean(cv_r2), sd(cv_r2)))
 
+# 4. Visualization (Optional but great for the poster)
+# Shows stability of the model across different data subsets
+par(mfrow=c(1,2))
+boxplot(cv_rmse, main="CV RMSE Distribution", col="lightblue", ylab="RMSE (Transformed Units)")
+boxplot(cv_r2, main="CV R-Squared Distribution", col="lightgreen", ylab="R-Squared")
+```
+
+```{r}
+library(zoo) # Required for as.yearmon
+
+# --- 1. Define Cleaning Function ---
+clean_numeric_col <- function(x) {
+  x <- as.character(x)         # Ensure string
+  x <- gsub(",", "", x)        # Remove commas
+  x <- gsub(" ", "", x)        # Remove spaces
+  as.numeric(x)                # Convert to number
+}
+
+# --- 2. Clean Test Data ---
+# Create a copy so we don't overwrite the original
+test_data_clean <- test_data
+
+# List of columns that need comma removal
+cols_to_clean <- c("Spotify.Streams", "Spotify.Playlist.Count", 
+                   "YouTube.Likes", "TikTok.Posts", 
+                   "Apple.Music.Playlist.Count")
+
+# Apply cleaning loop
 for(col in cols_to_clean) {
-  if(col %in% names(test_data)) {
-    test_data[[col]] <- clean_numeric(test_data[[col]])
+  if(col %in% names(test_data_clean)) {
+    test_data_clean[[col]] <- clean_numeric_col(test_data_clean[[col]])
   }
 }
 
-# --- 3. Handle Dates & Time Feature ---
-# Ensure Date format matches your CSV (check if it is d/m/y or y-m-d)
-test_data$Release.Date <- as.Date(test_data$Release.Date, format = "%d/%m/%Y")
+# --- 3. Handle Date & Time Feature ---
+# Convert Release.Date to Date object
+test_data_clean$Release.Date <- as.Date(test_data_clean$Release.Date, format = "%d/%m/%Y")
 
-# Recalculate Baseline (Hardcoded from your training set analysis to ensure consistency)
-# Ideally, replace this with the actual baseline date from your training set object
-# For now, we calculate it dynamically if the training set 'spotify_time' is available, else we guess.
-if(exists("spotify_time")) {
-    baseline_date <- min(spotify_time$Release.Date, na.rm = TRUE)
-} else {
-    # Fallback: Use min of test if training not avail (Warning: this might be slightly off)
-    baseline_date <- min(test_data$Release.Date, na.rm = TRUE)
+# Recalculate 'time' (Months since baseline)
+# CRITICAL: We must use the SAME baseline_date as the training set.
+# If 'baseline_date' isn't in your environment, we recalculate it from the full 'data' or 'spotify_clean'
+if(!exists("baseline_date")) {
+  # Try to find it from the training set object if available
+  if(exists("spotify_time")) {
+     baseline_date <- min(spotify_time$Release.Date, na.rm = TRUE)
+  } else {
+     # Fallback (Just in case)
+     baseline_date <- min(as.Date(data$Release.Date, format="%d/%m/%Y"), na.rm=TRUE)
+  }
 }
 
-test_data$time <- round(as.numeric(
-  (as.yearmon(test_data$Release.Date) - as.yearmon(baseline_date)) * 12
-))
+# Calculate time difference
+test_data_clean$time <- as.numeric((as.yearmon(test_data_clean$Release.Date) - 
+                                    as.yearmon(baseline_date)) * 12)
+test_data_clean$time <- round(test_data_clean$time)
 
-# --- 4. Remove NAs BEFORE Transformation ---
-# Identify rows that have NAs in the key columns
-cols_needed <- c("time", "YouTube.Likes", "TikTok.Posts", "Spotify.Streams", 
-                 "Spotify.Playlist.Count", "Apple.Music.Playlist.Count")
+# --- 4. Remove NAs ---
+# We filter out rows that have NAs in the specific columns our model uses
+vars_needed <- c("Spotify.Streams", "time", "Spotify.Playlist.Count", 
+                 "YouTube.Likes", "TikTok.Posts", "Apple.Music.Playlist.Count")
 
-# Keep only complete cases
-test_data_clean <- test_data[complete.cases(test_data[, cols_needed]), ]
+test_data_clean <- test_data_clean[complete.cases(test_data_clean[, vars_needed]), ]
 
-cat(sprintf("Original rows: %d | Cleaned rows: %d | Dropped: %d\n", 
-            nrow(test_data), nrow(test_data_clean), nrow(test_data) - nrow(test_data_clean)))
+# --- 5. Apply Final Model Transformations ---
+# These must MATCH EXACTLY the transformations used in 'tf_reduced_time_model4'
 
-# --- 5. Apply Transformations (On Clean Data) ---
-test_data_clean$tf_time    <- (test_data_clean$time) ^ 5
-test_data_clean$tf_youtube <- (test_data_clean$YouTube.Likes) ^ 0.3
-test_data_clean$tf_tiktok  <- (test_data_clean$TikTok.Posts) ^ 0.2
-test_data_clean$tf_streams <- (test_data_clean$Spotify.Streams) ^ (2/5)
+# Response Transformation
+test_data_clean$tf_streams <- (test_data_clean$Spotify.Streams)^(2/5)
 
-# --- 6. Run Prediction ---
-# Use the cleaned dataset
-test_predictions <- predict(tf_reduced_time_model4, newdata = test_data_clean)
-test_actuals <- test_data_clean$tf_streams
+# Predictor Transformations
+test_data_clean$tf_time    <- (test_data_clean$time)^0.3
+test_data_clean$tf_youtube <- (test_data_clean$YouTube.Likes)^0.2
+test_data_clean$tf_tiktok  <- (test_data_clean$TikTok.Posts)^0.2
+# Note: Apple.Music.Playlist.Count was NOT transformed in your final model formula
 
-# Calculate Metrics
-# na.rm = TRUE added as a final safety net
-rss_test <- sum((test_actuals - test_predictions)^2, na.rm = TRUE)
-tss_test <- sum((test_actuals - mean(test_actuals, na.rm = TRUE))^2, na.rm = TRUE)
-
-r2_test <- 1 - (rss_test / tss_test)
-rmse_test <- sqrt(mean((test_actuals - test_predictions)^2, na.rm = TRUE))
-
-# Output
-cat("Test Data Performance:\n")
-cat("----------------------\n")
-cat(sprintf("Prediction R-squared: %.4f\n", r2_test))
-cat(sprintf("Test RMSE: %.4f\n", rmse_test))
+cat("Test Data Prepared. Valid rows:", nrow(test_data_clean))
 ```
+
+
+```{r}
+# 1. Fit the EXACT SAME model structure on the Test Data
+# We do this solely to compare coefficients in the table (as seen in your image)
+model_test_fit <- lm(tf_streams ~ tf_time + Spotify.Playlist.Count + tf_youtube + 
+                     tf_tiktok + Apple.Music.Playlist.Count + 
+                     tf_time:Spotify.Playlist.Count, 
+                     data = test_data_clean) 
+                     # Ensure 'test_data_clean' has your tf_ variables created!
+
+# 2. Generate the Side-by-Side Table
+stargazer(tf_reduced_time_model4, model_test_fit,
+          
+          # Labels for the columns
+          column.labels = c("Final Model (Training)", "Final Model (Testing)"),
+          dep.var.labels = "Transformed Spotify Streams",
+          
+          # Make labels readable (Replace these with your preferred names)
+          covariate.labels = c(
+            "Time (Transformed)", 
+            "Spotify Playlist Count", 
+            "YouTube Likes (Transformed)", 
+            "TikTok Posts (Transformed)", 
+            "Apple Music Playlist Count", 
+            "Interaction: Time * Spotify Playlists",
+            "Constant"
+          ),
+          
+          # Statistics to display (matching your image)
+          keep.stat = c("n", "rsq", "adj.rsq", "ser", "f"),
+          
+          # Output type
+          type = "text", # Change to "latex" or "html" when knitting to PDF/HTML
+          
+          # Formatting
+          digits = 3,
+          star.cutoffs = c(0.05, 0.01, 0.001),
+          
+          # Title
+          title = "Table 3: Regression Output Table for Final Model Fit to Training vs. Testing Data"
+)
+```
+
+```{r}
+library(car)
+library(knitr)
+library(dplyr)
+
+# --- 1. Define the Diagnostics Function ---
+get_model_diagnostics <- function(model, model_name) {
+  
+  # Basic Stats
+  summ <- summary(model)
+  n <- nrow(model$model)
+  p <- length(coef(model)) - 1  # Number of predictors (excluding intercept)
+  
+  # 1. Information Criteria
+  # Note: AIC/BIC are only comparable if Response and N are identical. 
+  # We calculate them for completeness, but comparisons across transformed Y are invalid.
+  aic_val <- AIC(model)
+  bic_val <- BIC(model)
+  aicc_val <- aic_val + (2 * (p + 1) * (p + 2)) / (n - p - 2) # AICc Formula
+  
+  # 2. VIF Violations (> 5)
+  vif_val <- tryCatch(vif(model), error = function(e) NULL)
+  vif_violation <- 0
+  if (!is.null(vif_val)) {
+    # Handle GVIF (for models with interactions/factors) vs Standard VIF
+    if (is.matrix(vif_val)) {
+      # For GVIF, we usually check GVIF column (column 1)
+      vif_violation <- sum(vif_val[, 1] > 5)
+    } else {
+      vif_violation <- sum(vif_val > 5)
+    }
+  }
+  
+  # 3. Diagnostic Cutoffs
+  h_cut <- 2 * (p + 1) / n
+  cook_cut <- qf(0.5, df1 = p + 1, df2 = n - p - 1)
+  fit_cut <- 2 * sqrt((p + 1) / n)
+  beta_cut <- 2 / sqrt(n)
+  
+  # 4. Calculate Diagnostic Counts
+  h_ii <- hatvalues(model)
+  r_i <- rstandard(model)
+  D_i <- cooks.distance(model)
+  dffits_i <- dffits(model)
+  dfbetas_i <- dfbetas(model)
+  
+  # Indices
+  lev_idx <- which(h_ii > h_cut)
+  outlier_idx <- which(abs(r_i) > 4) # Using > 4 as "Extreme" outlier (match image logic)
+  cook_idx <- which(D_i > cook_cut)
+  dffits_idx <- which(abs(dffits_i) > fit_cut)
+  
+  # DFBETAS: Check if ANY coefficient exceeds cutoff for an observation
+  dfbetas_idx <- which(apply(abs(dfbetas_i) > beta_cut, 1, any))
+  
+  # 5. Unique Influential Points (Union of all issues)
+  all_issues <- unique(c(lev_idx, outlier_idx, cook_idx, dffits_idx, dfbetas_idx))
+  n_unique <- length(all_issues)
+  pct_unique <- round((n_unique / n) * 100, 1)
+  
+  # Return Data Row
+  data.frame(
+    Metric_Name = model_name,
+    N_Predictors = p,
+    Adj_R2 = round(summ$adj.r.squared, 4),
+    AIC = round(aic_val, 2),
+    BIC = round(bic_val, 2),
+    AICc = round(aicc_val, 2),
+    VIF_Violations = vif_violation,
+    N_Leverage = length(lev_idx),
+    N_Outliers = length(outlier_idx),
+    N_Cooks = length(cook_idx),
+    N_DFFITS = length(dffits_idx),
+    N_DFBETAS = length(dfbetas_idx),
+    Unique_Influential = paste0(n_unique, " (", pct_unique, "%)")
+  )
+}
+
+# --- 2. Apply to Your Models ---
+# Make sure these model objects exist in your environment before running this chunk
+
+# List of models to compare (Update names if yours are different)
+# We create a list to handle potential errors if a model isn't found
+models_to_check <- list()
+
+if(exists("preliminary_model")) models_to_check[["Preliminary"]] <- preliminary_model
+if(exists("reduced_time_model3")) models_to_check[["Reduced Linear"]] <- reduced_time_model3
+if(exists("tf_reduced_time_model1")) models_to_check[["Transformed Y"]] <- tf_reduced_time_model1
+if(exists("tf_reduced_time_model4")) models_to_check[["Final Model"]] <- tf_reduced_time_model4
+
+# Generate Table
+results_df <- data.frame()
+
+for (name in names(models_to_check)) {
+  res <- get_model_diagnostics(models_to_check[[name]], name)
+  results_df <- rbind(results_df, res)
+}
+
+# --- 3. Transpose and Format Table (To match screenshot layout) ---
+final_table <- t(results_df)
+colnames(final_table) <- results_df$Metric_Name
+final_table <- final_table[-1, ] # Remove the Name row since it's now header
+
+# Display using kable
+kable(final_table, caption = "Table 2: Model Diagnostics for Training and Testing Models")
+```
+
+
+```{r}
+library(knitr)
+
+# Select the variables actually used in your final model
+# Note: We select the TRANSFORMED versions (tf_) where applicable
+vars_of_interest <- c("tf_streams", "tf_time", "Spotify.Playlist.Count", 
+                      "tf_youtube", "tf_tiktok", "Apple.Music.Playlist.Count")
+
+# Create the summary table
+knitr::kable(summary(spotify_time[, vars_of_interest]), 
+             caption = "Summary Table of Variables in Final Model")
+```
+
+```{r}
+attach(spotify_time) # Temporarily attach to make plotting easier
+par(mfrow=c(2,3))    # Set up a 2x3 grid
+
+# Plot histograms for your specific model variables
+hist(tf_streams, breaks=20, main="Spotify Streams^(2/5) (Y)", col="lightblue")
+hist(tf_time, breaks=20, main="Time^(0.3)", col="grey")
+hist(Spotify.Playlist.Count, breaks=20, main="Spotify Playlists", col="grey")
+hist(tf_youtube, breaks=20, main="YouTube Likes^(0.2)", col="grey")
+hist(tf_tiktok, breaks=20, main="TikTok Posts^(0.2)", col="grey")
+hist(Apple.Music.Playlist.Count, breaks=20, main="Apple Music Playlists Count", col="grey")
+
+detach(spotify_time) # Always detach after use to avoid conflicts
+```
+
+
+```{r}
+library(ggplot2)
+library(gridExtra) # You might need: install.packages("gridExtra")
+
+# Plot A: Streams vs Spotify Playlists (Curation)
+p1 <- ggplot(data=spotify_time, aes(x=Spotify.Playlist.Count, y=tf_streams)) + 
+  geom_point(alpha=0.3, color="darkblue") + 
+  geom_smooth(method = lm, se = FALSE, color="red") + 
+  labs(x = 'Spotify Playlists', y='Transformed Streams', 
+       title = 'Curation: Playlists vs Streams') +
+  theme_minimal()
+
+# Plot B: Streams vs TikTok Posts (Virality)
+p2 <- ggplot(data=spotify_time, aes(x=tf_tiktok, y=tf_streams)) + 
+  geom_point(alpha=0.3, color="darkgreen") + 
+  geom_smooth(method = lm, se = FALSE, color="red") + 
+  labs(x = 'Transformed TikTok Posts', y='Transformed Streams', 
+       title = 'Virality: TikTok vs Streams') +
+  theme_minimal()
+
+# Arrange them side by side
+grid.arrange(p1, p2, nrow=1)
+```
+
+```{r}
+library(knitr)
+
+# --- 1. Calculate MSE for the Final Model (Training Data) ---
+# We use the residuals directly from your existing final model
+train_residuals <- resid(tf_reduced_time_model4)
+mse_train_fit <- mean(train_residuals^2)
+
+# --- 2. Train a New Model on the Test Data ---
+# We fit a model using the EXACT SAME formula but on 'test_data_clean'
+# This tells us: "How well does this equation fit the test data if we optimized it specifically for the test data?"
+model_test_fit <- lm(tf_streams ~ tf_time + Spotify.Playlist.Count + tf_youtube + 
+                     tf_tiktok + Apple.Music.Playlist.Count + 
+                     tf_time:Spotify.Playlist.Count, 
+                     data = test_data_clean)
+
+# Calculate MSE for this new test-specific model
+test_residuals <- resid(model_test_fit)
+mse_test_fit <- mean(test_residuals^2)
+
+# --- 3. Compare the Results ---
+mse_comparison <- data.frame(
+  Dataset = c("Training", "Test"),
+  MSE = c(mse_train_fit, mse_test_fit),
+  RMSE = c(sqrt(mse_train_fit), sqrt(mse_test_fit)) # RMSE is often easier to interpret
+)
+
+# Output the table
+kable(mse_comparison, 
+      digits = 4, 
+      caption = "Table 6: Comparison of Model Fit (MSE) on Training vs. Test Populations")
+```
+
 
