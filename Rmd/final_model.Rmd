@@ -88,7 +88,7 @@ spotify_clean <- train_data[complete_rows, ]
 cat("Number of rows remaining:", nrow(spotify_clean), "\n")
 ```
 
-Since after cleaning the dataset, we are remained with 2916 valid entries, we can still assume that we can train a valid model from this dataset.
+Since after cleaning the dataset, we are remained with 2030 valid entries, we can still assume that we can train a valid model from this dataset.
 
 ```{r}
 # Remove Duplicate data from dataset (prevent the same song being used twice in the model)
@@ -190,59 +190,30 @@ preliminary_model <- lm(Spotify.Streams ~ Spotify.Playlist.Count + YouTube.Views
 summary(preliminary_model)
 ```
 
-## Problematic Observations in Preliminary Model
-```{r}
-n <- nrow(spotify_clean)
-p <- length(coef(preliminary_model))-1
-hcut <- 2*(p + 1)/n
-cookcut <- qf(0.5, df1=p+1, df2=n-p-1)
-fitcut <- 2 * sqrt((p + 1) / n)
-betacut <- 2 / sqrt(n)
-```
-
-```{r}
-h_ii <- hatvalues(preliminary_model)
-r_i <- rstandard(preliminary_model)
-D_i <- cooks.distance(preliminary_model)
-dffits_i <- dffits(preliminary_model)
-dfbetas_i <- dfbetas(preliminary_model)
-```
-
-
-```{r}
-# indices flagged by each rule
-lev_idx      <- which(h_ii > hcut)                       # leverage points
-reg_out_idx  <- which(r_i > 4 | r_i < -4)                # regression outliers
-cook_idx     <- which(D_i > cookcut)                     # Cook's distance
-dffits_idx   <- which(abs(dffits_i) > fitcut)            # DFFITS
-dfbetas_idx  <- which(apply(abs(dfbetas_i) > betacut, 1, any))  # any beta
-```
-
-```{r}
-all_influential_idx <- sort(unique(c(
-  lev_idx,
-  reg_out_idx,
-  cook_idx,
-  dffits_idx,
-  dfbetas_idx
-)))
-```
-
-```{r}
-# proportion of influential points in spotify_valid
-prop_influential <- length(all_influential_idx) / n
-
-prop_influential
-```
-
 ## Multicollinearity
 
 ```{r}
 vif(preliminary_model)
 ```
-The preliminary fitted model is $$Spotify.Playlist.Count = -22100000 + 4325\text{Spotify.Playlist Count} + 0.02179\text{YouTube.Views} + 11.7\text{YouTube.Likes} + 31.6\text{TikTok.Posts} + 0.02417\text{TikTok.Views} + 1682000\text{Apple.Music.Playlist.Count} + 8.444\text{Shazam.Counts} - 0.03575\text{AirPlay.Spins} + 7944000\text{Explicit.Track} - -90.08\text{Spotify.Playlist.Count}*{Explicit.Track}$$ Firstly, we check the conditional mean response condition to make sure that the observations from residual plots are conclusive. From each response vs. predictor plot, there is no obvious non-linear relationship from the plot, so the conditional mean response condition holds. Also, from scatter plot between each pair of predictor, no pair of predictors seem to exhibit a significant non-linear pattern, so the conditional mean predictor condition also holds.
+The preliminary fitted model is $$Spotify.Playlist.Count = -22100000 + 4325\text{Spotify.Playlist Count} + 0.02179\text{YouTube.Views} + 11.7\text{YouTube.Likes} + 31.6\text{TikTok.Posts} + 0.02417\text{TikTok.Views} + 1682000\text{Apple.Music.Playlist.Count} + 8.444\text{Shazam.Counts} - 0.03575\text{AirPlay.Spins} + 7944000\text{Explicit.Track} - -90.08\text{Spotify.Playlist.Count}*{Explicit.Track}$$
 
-Secondly, from the residual vs. fitted plot, a clear fanning pattern is present indicating a non-constant variance in the residuals. Also, the qqnorm plot demonstrates a non-linear pattern and largely deviates at the head and tail of the distribution. This indicates a violation in the normality assumption. In the observation of residual vs. fitted and each pair of residual vs. predictor, there is no obvious non-linear pattern or clustering presented, after examining the nature of each feature, there is likely no violation in the linearity and uncorrelated error assumption.
+```{r, echo=F, fig.width=8, fig.height=11}
+e_hat <- resid(preliminary_model)
+y_hat <- fitted(preliminary_model)
+
+feature_indices <- match(features, names(spotify_clean))
+
+par(mfrow=c(4,3))
+plot(spotify_clean$Spotify.Streams ~ y_hat, ylab="Spotify Streams", xlab="Fitted")
+plot(e_hat ~ y_hat, ylab="Residuals", xlab="Fitted")
+for(i in feature_indices){
+ plot(e_hat ~ spotify_clean[,i], ylab="Residuals", xlab=names(spotify_clean)[i])
+}
+plot(e_hat, ylab="Residuals", xlab="Observation number")
+qqnorm(e_hat)
+qqline(e_hat)
+```
+
 
 # Final Model
 ## Feature Engineering
@@ -527,7 +498,7 @@ spotify_time <- spotify_time[-most_inf_idx, ]
 
 ```{r}
 tf_reduced_time_model4 <- lm(tf_streams ~ tf_time + Spotify.Playlist.Count + tf_youtube + tf_tiktok + Apple.Music.Playlist.Count + tf_time:Spotify.Playlist.Count, data=spotify_time)
-summary(tf_reduced_time_model3)
+summary(tf_reduced_time_model4)
 ```
 
 ```{r}
@@ -537,107 +508,21 @@ tf_features <- c("tf_streams", "tf_time", "Spotify.Playlist.Count",
 ```
 
 ```{r, echo=F, fig.width=8, fig.height=11}
-library(ggplot2)
+e_hat <- resid(tf_reduced_time_model4)
+y_hat <- fitted(tf_reduced_time_model4)
 
-# 1. Setup Data
-plot_data <- spotify_time
-plot_data$Residuals <- resid(tf_reduced_time_model4)
-plot_data$Fitted <- fitted(tf_reduced_time_model4)
+feature_indices <- match(tf_features, names(spotify_time))
 
-# 2. Define Labels for ALL variables (Original + Transformed)
-axis_labels <- c(
-  # Original / Untransformed
-  "time" = "Time",
-  "Spotify.Playlist.Count" = "Spotify Playlist Count",
-  "YouTube.Likes" = "YouTube Likes",
-  "TikTok.Posts" = "TikTok Posts",
-  "Apple.Music.Playlist.Count" = "Apple Music Playlist Count",
-  
-  # Transformed
-  "tf_time" = "Time^(0.3)",
-  "tf_youtube" = "YouTube Likes^(0.2)",
-  "tf_tiktok" = "TikTok Posts^(0.2)"
-)
-
-# 3. Define the Order of Variables
-# List 1: Original / Untransformed Variables
-raw_vars <- c("time", "Spotify.Playlist.Count", "YouTube.Likes", 
-              "TikTok.Posts", "Apple.Music.Playlist.Count")
-
-# List 2: Transformed Variables (Only the ones that changed)
-tf_vars  <- c("tf_time", "tf_youtube", "tf_tiktok")
-
-# Initialize list and counters
-my_plots <- list()
-fig_main <- 2  
-sub_count <- 1 
-
-# --- A. Residuals vs Fitted ---
-p <- ggplot(plot_data, aes(x = Fitted, y = Residuals)) +
-  geom_point(alpha = 0.5, color = "black") +
-  labs(
-    x = "Fitted Values", 
-    y = "Residuals",
-    title = paste0("Figure ", fig_main, ".", sub_count, ": Residuals vs Fitted")
-  ) +
-  theme_bw()
-
-my_plots[["Fitted"]] <- p
-sub_count <- sub_count + 1
-
-# --- B. Loop for UNTRANSFORMED Predictors ---
-for(var in raw_vars){
-  nice_label <- ifelse(var %in% names(axis_labels), axis_labels[var], var)
-  
-  p <- ggplot(plot_data, aes_string(x = var, y = "Residuals")) +
-    geom_point(alpha = 0.5) +
-    labs(
-      x = nice_label, 
-      y = "Residuals",
-      title = paste0("Figure ", fig_main, ".", sub_count, ": Resid vs ", nice_label)
-    ) +
-    theme_bw() +
-    theme(plot.title = element_text(size=10))
-  
-  my_plots[[var]] <- p
-  sub_count <- sub_count + 1
+par(mfrow=c(4,3))
+plot(e_hat ~ y_hat, ylab="Residuals", xlab="Fitted")
+for(i in feature_indices){
+ plot(e_hat ~ spotify_time[,i], ylab="Residuals", xlab=names(spotify_time)[i])
 }
-
-# --- C. Loop for TRANSFORMED Predictors ---
-for(var in tf_vars){
-  nice_label <- ifelse(var %in% names(axis_labels), axis_labels[var], var)
-  
-  p <- ggplot(plot_data, aes_string(x = var, y = "Residuals")) +
-    geom_point(alpha = 0.5, color = "blue") + # Optional: Blue to distinguish transformed
-    labs(
-      x = nice_label, 
-      y = "Residuals",
-      title = paste0("Figure ", fig_main, ".", sub_count, ": Resid vs ", nice_label)
-    ) +
-    theme_bw() +
-    theme(plot.title = element_text(size=10))
-  
-  my_plots[[var]] <- p
-  sub_count <- sub_count + 1
-}
-
-# --- D. Normal Q-Q Plot ---
-p_qq <- ggplot(plot_data, aes(sample = Residuals)) +
-  stat_qq() +
-  stat_qq_line(color = "red") +
-  labs(
-    x = "Theoretical Quantiles", 
-    y = "Sample Quantiles",
-    title = paste0("Figure ", fig_main, ".", sub_count, ": Normal Q-Q Plot")
-  ) +
-  theme_bw()
-
-my_plots[["QQ"]] <- p_qq
+plot(e_hat, ylab="Residuals", xlab="Observation number")
+qqnorm(e_hat)
+qqline(e_hat)
 ```
 
-```{r, echo=F, fig.width=4, fig.height=3}
-for(p in my_plots) print(p)
-```
 
 ```{r}
 vif(tf_reduced_time_model4)
@@ -858,7 +743,7 @@ boxplot(cv_r2, main="CV R-Squared Distribution", col="lightgreen", ylab="R-Squar
 ```
 
 ```{r}
-library(zoo) # Required for as.yearmon
+library(zoo) # Required for as.yearm  
 
 # --- 1. Define Cleaning Function ---
 clean_numeric_col <- function(x) {
@@ -1131,38 +1016,3 @@ p2 <- ggplot(data=spotify_time, aes(x=tf_tiktok, y=tf_streams)) +
 # Arrange them side by side
 grid.arrange(p1, p2, nrow=1)
 ```
-
-```{r}
-library(knitr)
-
-# --- 1. Calculate MSE for the Final Model (Training Data) ---
-# We use the residuals directly from your existing final model
-train_residuals <- resid(tf_reduced_time_model4)
-mse_train_fit <- mean(train_residuals^2)
-
-# --- 2. Train a New Model on the Test Data ---
-# We fit a model using the EXACT SAME formula but on 'test_data_clean'
-# This tells us: "How well does this equation fit the test data if we optimized it specifically for the test data?"
-model_test_fit <- lm(tf_streams ~ tf_time + Spotify.Playlist.Count + tf_youtube + 
-                     tf_tiktok + Apple.Music.Playlist.Count + 
-                     tf_time:Spotify.Playlist.Count, 
-                     data = test_data_clean)
-
-# Calculate MSE for this new test-specific model
-test_residuals <- resid(model_test_fit)
-mse_test_fit <- mean(test_residuals^2)
-
-# --- 3. Compare the Results ---
-mse_comparison <- data.frame(
-  Dataset = c("Training", "Test"),
-  MSE = c(mse_train_fit, mse_test_fit),
-  RMSE = c(sqrt(mse_train_fit), sqrt(mse_test_fit)) # RMSE is often easier to interpret
-)
-
-# Output the table
-kable(mse_comparison, 
-      digits = 4, 
-      caption = "Table 6: Comparison of Model Fit (MSE) on Training vs. Test Populations")
-```
-
-
